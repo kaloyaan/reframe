@@ -121,7 +121,7 @@ class ReframeClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def post(self, path: str, json: Dict[str, Any] | None = None):
+    async def post(self, path: str, json: Optional[Dict[str, Any]] = None):
         url = f"{self.base_url}{path}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(url, json=json)
