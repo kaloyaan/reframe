@@ -409,7 +409,9 @@ class ImageProcessor:
                 threshold_scale=processing_settings.get("threshold_scale", 1.0)
             )
             
-            # Save processed image
+            # Save processed image (convert palette mode to RGB for JPEG)
+            if dithered_image.mode == 'P':
+                dithered_image = dithered_image.convert('RGB')
             dithered_image.save(output_path, format="JPEG")
             logging.info(f"Processed image saved to {output_path}")
             
@@ -473,6 +475,9 @@ class FileManager:
         ext_lower = extension.lower()
         if ext_lower in ("jpg", "jpeg"):
             save_format = "JPEG"
+            # Convert palette mode to RGB for JPEG compatibility
+            if image.mode == 'P':
+                image = image.convert('RGB')
         elif ext_lower == "png":
             save_format = "PNG"
         else:

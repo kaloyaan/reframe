@@ -218,6 +218,9 @@ class CameraAPI:
                     DITHERED_PHOTOS_PATH,
                     f"{_Path(photo_path).stem}_dithered.jpg"
                 )
+                # Convert palette mode to RGB for JPEG compatibility
+                if dithered_image.mode == 'P':
+                    dithered_image = dithered_image.convert('RGB')
                 dithered_image.save(processed_path, format="JPEG")
                 
                 # Auto-display if enabled
@@ -305,6 +308,9 @@ class CameraAPI:
                 
                 # Save reprocessed image (overwrite existing)
                 dithered_path = os.path.join(DITHERED_PHOTOS_PATH, f"{photo_id}_dithered.jpg")
+                # Convert palette mode to RGB for JPEG compatibility
+                if dithered_image.mode == 'P':
+                    dithered_image = dithered_image.convert('RGB')
                 dithered_image.save(dithered_path, format="JPEG")
                 
                 message = f"Reprocessed photo {photo_id} successfully"
