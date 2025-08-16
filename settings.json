@@ -1,0 +1,27 @@
+{
+  "camera": {
+    "resolution": {
+      "width": 1200,
+      "height": 800
+    },
+    "exposure_value": -0.25,
+    "sharpness": 3,
+    "autofocus_mode": 2,
+    "hdr_enabled": true
+  },
+  "processing": {
+    "saturation": 0.6,
+    "brightness_factor": 1.1,
+    "color_factor": 1.4,
+    "dithering_method": "floyd_steinberg",
+    "bayer_size": 4,
+    "threshold_scale": 1
+  },
+  "display": {
+    "auto_display": true,
+    "display_timeout": 0
+  },
+  "system": {
+    "auto_refresh_interval": 30
+  }
+}

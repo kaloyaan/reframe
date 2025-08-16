@@ -1,0 +1,23 @@
+[Unit]
+Description=Reframe Camera Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=cam
+Group=cam
+WorkingDirectory=/home/cam/reframe
+# Enable HDR before starting the main application
+ExecStartPre=/home/cam/reframe/enable_hdr.sh
+ExecStart=/usr/bin/python3 /home/cam/reframe/reframe.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardware access permissions
+SupplementaryGroups=video i2c spi gpio
+
+[Install]
+WantedBy=multi-user.target
