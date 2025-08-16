@@ -9,53 +9,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse
+import httpx
 
-# Import camera functionality from reframe.py
-try:
-    from reframe import CameraManager, ImageProcessor, EInkDisplay, FileManager, CameraSystem
-    CAMERA_AVAILABLE = True
-except ImportError as e:
-    print(f"Camera hardware not available: {e}")
-    CAMERA_AVAILABLE = False
-    
-    # Create mock classes for development/testing
-    class CameraManager:
-        def __init__(self): pass
-        def configure_camera(self): pass
-        def capture_photo(self, file_path): 
-            print(f"Mock: Would capture photo to {file_path}")
-    
-    class ImageProcessor:
-        @staticmethod
-        def resize_image(image, size=(600, 400)): return image
-        @staticmethod
-        def apply_dithering(image, **kwargs): return image
-    
-    class EInkDisplay:
-        def __init__(self): pass
-        def display_image(self, image): 
-            print("Mock: Would display image on e-ink screen")
-        def sleep(self): pass
-    
-    class FileManager:
-        def __init__(self, save_path, processed_path):
-            self.save_path = save_path
-            self.processed_path = processed_path
-        def get_new_file_path(self, folder, extension="png"):
-            index = len(os.listdir(folder))
-            return os.path.join(folder, f"{str(index).zfill(5)}.{extension}")
-        def save_image(self, image, folder, extension="png"):
-            file_path = self.get_new_file_path(folder, extension)
-            print(f"Mock: Would save image to {file_path}")
-            return file_path
-
-    class CameraSystem:
-        def __init__(self, settings_path: str = None):
-            self.settings_path = settings_path
-        def capture_photo_api(self):
-            return {"success": True, "message": "Mock: Photo captured successfully"}
-        def display_photo_api(self, photo_id: str):
-            return {"success": True, "message": f"Mock: Would display photo {photo_id}"}
+CAMERA_AVAILABLE = False  # Dashboard no longer owns hardware; main service does
 
 # Constants
 BASE_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -150,182 +106,27 @@ class SettingsManager:
         """Get processing-specific settings."""
         return self.load_settings().get("processing", {})
 
-class CameraAPI:
-    """Integrates camera functionality with dashboard API."""
-    
-    def __init__(self, settings_manager: SettingsManager):
-        self.settings_manager = settings_manager
-        
-        # Initialize camera components (or mocks if hardware unavailable)
-        try:
-            self.camera_manager = CameraManager(settings_path=SETTINGS_PATH) if CAMERA_AVAILABLE else CameraManager()
-            self.eink_display = EInkDisplay() if CAMERA_AVAILABLE else EInkDisplay()
-            self.file_manager = FileManager(PHOTOS_PATH, DITHERED_PHOTOS_PATH)
-            self.image_processor = ImageProcessor()
-        except Exception as e:
-            logging.error(f"Error initializing camera components: {e}")
-            raise HTTPException(status_code=500, detail="Camera initialization failed")
-    
-    def apply_camera_settings(self):
-        """Apply current camera settings to the hardware."""
-        if not CAMERA_AVAILABLE:
-            print("Mock: Would apply camera settings")
-            return
-            
-        try:
-            camera_settings = self.settings_manager.get_camera_settings()
-            # Apply settings to camera hardware via CameraManager
-            self.camera_manager.apply_camera_settings(camera_settings)
-            logging.info(f"Applied camera settings: {camera_settings}")
-        except Exception as e:
-            logging.error(f"Error applying camera settings: {e}")
-    
-    async def capture_photo(self) -> Dict[str, Any]:
-        """Capture a new photo with current settings."""
-        try:
-            # Apply current settings
-            self.apply_camera_settings()
-            
-            # Get new file path
-            photo_path = self.file_manager.get_new_file_path(PHOTOS_PATH, "jpg")
-            
-            # Capture photo
-            if CAMERA_AVAILABLE:
-                self.camera_manager.capture_photo(photo_path)
-                
-                # Load and process the captured image
-                from PIL import Image
-                original_image = Image.open(photo_path)
-                
-                # Get processing settings
-                processing_settings = self.settings_manager.get_processing_settings()
-                
-                # Resize and process image
-                resized_image = self.image_processor.resize_image(original_image)
-                dithered_image = self.image_processor.apply_dithering(
-                    resized_image,
-                    saturation=processing_settings.get("saturation", 0.6),
-                    brightness_factor=processing_settings.get("brightness_factor", 1.1),
-                    color_factor=processing_settings.get("color_factor", 1.4),
-                    dithering_method=processing_settings.get("dithering_method", "floyd_steinberg"),
-                    bayer_size=processing_settings.get("bayer_size", 4),
-                    threshold_scale=processing_settings.get("threshold_scale", 1.0)
-                )
-                
-                # Save processed image using original stem with _dithered.jpg to match gallery expectations
-                from pathlib import Path as _Path
-                processed_path = os.path.join(
-                    DITHERED_PHOTOS_PATH,
-                    f"{_Path(photo_path).stem}_dithered.jpg"
-                )
-                # Convert palette mode to RGB for JPEG compatibility
-                if dithered_image.mode == 'P':
-                    dithered_image = dithered_image.convert('RGB')
-                dithered_image.save(processed_path, format="JPEG")
-                
-                # Auto-display if enabled
-                display_settings = self.settings_manager.load_settings().get("display", {})
-                if display_settings.get("auto_display", True):
-                    self.eink_display.display_image(dithered_image)
-                
-                return {
-                    "status": "success",
-                    "original_path": photo_path,
-                    "processed_path": processed_path,
-                    "message": "Photo captured successfully"
-                }
-            else:
-                # Mock response for development
-                return {
-                    "status": "success",
-                    "original_path": photo_path,
-                    "processed_path": os.path.join(DITHERED_PHOTOS_PATH, f"{Path(photo_path).stem}_dithered.jpg"),
-                    "message": "Mock: Photo captured successfully"
-                }
-                
-        except Exception as e:
-            logging.error(f"Error capturing photo: {e}")
-            raise HTTPException(status_code=500, detail=f"Photo capture failed: {str(e)}")
-    
-    async def display_photo(self, photo_id: str) -> Dict[str, Any]:
-        """Display a specific photo on the e-ink screen."""
-        try:
-            # Find the photo
-            dithered_path = os.path.join(DITHERED_PHOTOS_PATH, f"{photo_id}_dithered.jpg")
-            if not os.path.exists(dithered_path):
-                # Try without _dithered suffix
-                dithered_path = os.path.join(DITHERED_PHOTOS_PATH, f"{photo_id}.jpg")
-                if not os.path.exists(dithered_path):
-                    raise HTTPException(status_code=404, detail="Dithered photo not found")
-            
-            if CAMERA_AVAILABLE:
-                from PIL import Image
-                image = Image.open(dithered_path)
-                self.eink_display.display_image(image)
-                message = f"Displaying photo {photo_id} on e-ink screen"
-            else:
-                message = f"Mock: Would display photo {photo_id} on e-ink screen"
-            
-            return {
-                "status": "success", 
-                "photo_id": photo_id,
-                "message": message
-            }
-            
-        except Exception as e:
-            logging.error(f"Error displaying photo: {e}")
-            raise HTTPException(status_code=500, detail=f"Display failed: {str(e)}")
-    
-    async def reprocess_photo(self, photo_id: str, processing_settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Reprocess an existing photo with new settings."""
-        try:
-            # Find the original photo
-            original_path = os.path.join(PHOTOS_PATH, f"{photo_id}.jpg")
-            if not os.path.exists(original_path):
-                raise HTTPException(status_code=404, detail="Original photo not found")
-            
-            # Use provided settings or current settings
-            if processing_settings is None:
-                processing_settings = self.settings_manager.get_processing_settings()
-            
-            if CAMERA_AVAILABLE:
-                from PIL import Image
-                
-                # Load original image
-                original_image = Image.open(original_path)
-                
-                # Resize and process with new settings
-                resized_image = self.image_processor.resize_image(original_image)
-                dithered_image = self.image_processor.apply_dithering(
-                    resized_image,
-                    saturation=processing_settings.get("saturation", 0.6),
-                    brightness_factor=processing_settings.get("brightness_factor", 1.1),
-                    color_factor=processing_settings.get("color_factor", 1.4),
-                    dithering_method=processing_settings.get("dithering_method", "floyd_steinberg"),
-                    bayer_size=processing_settings.get("bayer_size", 4),
-                    threshold_scale=processing_settings.get("threshold_scale", 1.0)
-                )
-                
-                # Save reprocessed image (overwrite existing)
-                dithered_path = os.path.join(DITHERED_PHOTOS_PATH, f"{photo_id}_dithered.jpg")
-                # Convert palette mode to RGB for JPEG compatibility
-                if dithered_image.mode == 'P':
-                    dithered_image = dithered_image.convert('RGB')
-                dithered_image.save(dithered_path, format="JPEG")
-                
-                message = f"Reprocessed photo {photo_id} successfully"
-            else:
-                message = f"Mock: Would reprocess photo {photo_id}"
-            
-            return {
-                "status": "success",
-                "photo_id": photo_id,
-                "message": message
-            }
-            
-        except Exception as e:
-            logging.error(f"Error reprocessing photo: {e}")
-            raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")
+
+class ReframeClient:
+    """HTTP client to talk to the main reframe hardware service."""
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = httpx.Timeout(30.0)
+
+    async def get(self, path: str):
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def post(self, path: str, json: Dict[str, Any] | None = None):
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(url, json=json)
+            resp.raise_for_status()
+            return resp.json()
 
 class PhotoManager:
     """Manages photo operations for the dashboard."""
@@ -393,7 +194,10 @@ class PhotoManager:
 # Initialize managers
 settings_manager = SettingsManager()
 photo_manager = PhotoManager()
-camera_system = CameraSystem(settings_path=SETTINGS_PATH) if CAMERA_AVAILABLE else CameraSystem()
+
+# Initialize HTTP client to the hardware service
+REFRAME_API_BASE = os.environ.get("REFRAME_API_BASE", "http://127.0.0.1:8077/api")
+reframe_client = ReframeClient(REFRAME_API_BASE)
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -1470,17 +1274,31 @@ async def dashboard():
 
 @app.get("/api/photos")
 async def list_photos(page: int = 1, limit: int = 20):
-    """Get paginated list of photos with metadata."""
+    """Get paginated list of photos with metadata from the hardware service."""
     if page < 1:
         page = 1
-    if limit < 1 or limit > 100:  # Limit between 1 and 100
+    if limit < 1 or limit > 100:
         limit = 20
-    return photo_manager.get_all_photos(page=page, limit=limit)
+    # Fetch all photos from hardware service and paginate here for simplicity
+    all_photos = await reframe_client.get("/photos")
+    start = (page - 1) * limit
+    end = start + limit
+    total = len(all_photos)
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "pages": (total + limit - 1) // limit,
+        "photos": all_photos[start:end],
+    }
 
 @app.get("/api/photos/{photo_id}")
 async def get_photo_info(photo_id: str):
-    """Get information about a specific photo."""
-    return photo_manager.get_photo_info(photo_id)
+    """Get information about a specific photo from the hardware service."""
+    try:
+        return await reframe_client.get(f"/photos/{photo_id}")
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/photos/{filename}")
 async def serve_original_photo(filename: str):
@@ -1505,11 +1323,16 @@ async def get_settings():
 
 @app.post("/api/settings")
 async def update_settings(request: Request):
-    """Update settings."""
+    """Update settings and notify the hardware service to reload/apply."""
     try:
         settings_data = await request.json()
         success = settings_manager.save_settings(settings_data)
         if success:
+            try:
+                await reframe_client.post("/settings/reload")
+            except Exception:
+                # Hardware service might be down; still consider settings saved
+                pass
             return {"status": "success", "message": "Settings updated successfully"}
         else:
             raise HTTPException(status_code=500, detail="Failed to save settings")
@@ -1530,8 +1353,7 @@ async def get_processing_settings():
 async def capture_photo(background_tasks: BackgroundTasks):
     """Capture a new photo with current settings."""
     try:
-        # Use CameraSystem API from reframe.py (synchronous)
-        result = camera_system.capture_photo_api()
+        result = await reframe_client.post("/capture")
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1540,8 +1362,7 @@ async def capture_photo(background_tasks: BackgroundTasks):
 async def display_photo_on_screen(photo_id: str):
     """Display a specific photo on the e-ink screen."""
     try:
-        # Use CameraSystem API from reframe.py (synchronous)
-        result = camera_system.display_photo_api(photo_id)
+        result = await reframe_client.post(f"/display/{photo_id}")
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1550,16 +1371,13 @@ async def display_photo_on_screen(photo_id: str):
 async def reprocess_photo(photo_id: str, request: Request):
     """Reprocess an existing photo with new settings."""
     try:
-        # Get processing settings from request body (optional)
         processing_settings = None
         try:
             body = await request.json()
             processing_settings = body.get("processing_settings")
         except Exception:
             processing_settings = None
-
-        # Use CameraSystem API from reframe.py (synchronous)
-        result = camera_system.reprocess_photo_api(photo_id, processing_settings)
+        result = await reframe_client.post(f"/reprocess/{photo_id}", json={"processing_settings": processing_settings})
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1567,59 +1385,11 @@ async def reprocess_photo(photo_id: str, request: Request):
 @app.get("/api/status")
 async def get_system_status():
     """Get system status information."""
-    import shutil
-    import psutil
-    
     try:
-        # Get disk usage for photos directory
-        photos_usage = shutil.disk_usage(PHOTOS_PATH)
-        total_space = photos_usage.total
-        free_space = photos_usage.free
-        used_space = total_space - free_space
-        
-        # Get photo counts
-        photo_count = len([f for f in os.listdir(PHOTOS_PATH) if f.endswith(('.jpg', '.jpeg', '.png'))])
-        dithered_count = len([f for f in os.listdir(DITHERED_PHOTOS_PATH) if f.endswith(('.jpg', '.jpeg', '.png'))])
-        
-        # Get memory usage
-        memory = psutil.virtual_memory()
-        
-        status = {
-            "camera_available": CAMERA_AVAILABLE,
-            "storage": {
-                "total_gb": round(total_space / (1024**3), 2),
-                "used_gb": round(used_space / (1024**3), 2),
-                "free_gb": round(free_space / (1024**3), 2),
-                "usage_percent": round((used_space / total_space) * 100, 1)
-            },
-            "photos": {
-                "original_count": photo_count,
-                "dithered_count": dithered_count
-            },
-            "memory": {
-                "total_mb": round(memory.total / (1024**2), 1),
-                "used_mb": round(memory.used / (1024**2), 1),
-                "available_mb": round(memory.available / (1024**2), 1),
-                "usage_percent": memory.percent
-            },
-            "system": {
-                "uptime": "N/A",  # Could implement if needed
-                "temperature": "N/A"  # Would need hardware sensors
-            }
-        }
-        
+        status = await reframe_client.get("/status")
         return status
     except Exception as e:
-        # Return basic status if detailed info fails
-        return {
-            "camera_available": CAMERA_AVAILABLE,
-            "storage": {"status": "unavailable"},
-            "photos": {
-                "original_count": len([f for f in os.listdir(PHOTOS_PATH) if f.endswith(('.jpg', '.jpeg', '.png'))]),
-                "dithered_count": len([f for f in os.listdir(DITHERED_PHOTOS_PATH) if f.endswith(('.jpg', '.jpeg', '.png'))])
-            },
-            "error": str(e)
-        }
+        raise HTTPException(status_code=503, detail=f"Hardware service unavailable: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

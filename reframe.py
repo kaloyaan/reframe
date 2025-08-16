@@ -10,6 +10,21 @@ from PIL import Image, ImageEnhance
 from picamera2 import Picamera2
 import numpy as np
 import smbus2
+from typing import Optional, Dict, Any
+
+# Optional API server imports (only used when running as service)
+try:
+    from fastapi import FastAPI, HTTPException, Request
+    import uvicorn
+    _API_AVAILABLE = True
+except Exception:
+    _API_AVAILABLE = False
+    FastAPI = None  # type: ignore
+    HTTPException = None  # type: ignore
+    Request = None  # type: ignore
+    uvicorn = None  # type: ignore
+
+import threading
 
 libdir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'lib')
 if os.path.exists(libdir):
@@ -757,10 +772,117 @@ class CameraSystem:
             }
 
 
+# Shared camera system and operation lock for both button loop and API
+camera_system: Optional[CameraSystem] = None
+_operation_lock = threading.Lock()
+
+# FastAPI application exposing hardware control over localhost
+app = FastAPI(title="Reframe Hardware API") if _API_AVAILABLE else None
+
+if _API_AVAILABLE:
+    @app.post("/api/capture")
+    def api_capture():
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        with _operation_lock:
+            result = camera_system.capture_photo_api()
+        return result
+
+    @app.post("/api/display/{photo_id}")
+    def api_display(photo_id: str):
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        with _operation_lock:
+            result = camera_system.display_photo_api(photo_id)
+        return result
+
+    @app.post("/api/reprocess/{photo_id}")
+    async def api_reprocess(photo_id: str, request: Request):
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        try:
+            body: Dict[str, Any] = await request.json()
+            processing_settings = body.get("processing_settings") if isinstance(body, dict) else None
+        except Exception:
+            processing_settings = None
+        with _operation_lock:
+            result = camera_system.reprocess_photo_api(photo_id, processing_settings)
+        return result
+
+    @app.get("/api/photos")
+    def api_list_photos():
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        return camera_system.list_photos_api()
+
+    @app.get("/api/photos/{photo_id}")
+    def api_get_photo(photo_id: str):
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        info = camera_system.get_photo_info_api(photo_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return info
+
+    @app.delete("/api/photos/{photo_id}")
+    def api_delete_photo(photo_id: str):
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        with _operation_lock:
+            return camera_system.delete_photo_api(photo_id)
+
+    @app.post("/api/settings/reload")
+    def api_reload_settings():
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        with _operation_lock:
+            return camera_system.reload_settings_api()
+
+    @app.post("/api/settings/apply")
+    async def api_apply_settings(request: Request):
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        try:
+            body: Dict[str, Any] = await request.json()
+            camera_settings = body.get("camera_settings") if isinstance(body, dict) else None
+        except Exception:
+            camera_settings = None
+        with _operation_lock:
+            return camera_system.apply_settings_api(camera_settings)
+
+    @app.get("/api/status")
+    def api_status():
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        return camera_system.get_system_status_api()
+
+
+def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
+    if not _API_AVAILABLE:
+        logging.warning("FastAPI/uvicorn not available; hardware API will not be started")
+        return
+    def _run():
+        try:
+            uvicorn.run(app, host=host, port=port, log_level="warning")
+        except Exception as e:
+            logging.error(f"Failed to start API server: {e}")
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+
 def main():
-    camera_manager = CameraManager()
-    file_manager = FileManager(SAVE_PATH, PROCESSED_PATH)
-    eink_display = EInkDisplay()
+    global camera_system
+    # Initialize camera system once for both API and button loop
+    camera_system = CameraSystem()
 
     # Initialize I2C for power button detection
     I2C_ADDRESS = 0x57
@@ -777,42 +899,26 @@ def main():
 
     prev_state = False
 
-    logging.info("System initialized. Waiting for button press to capture photo...")
+    # Start API server in background
+    try:
+        port = int(os.environ.get("REFRAME_API_PORT", "8077"))
+    except Exception:
+        port = 8077
+    _start_api_server_in_background(host="127.0.0.1", port=port)
+
+    logging.info("System initialized. API server running. Waiting for button press to capture photo...")
 
     try:
         while True:
             current_state = is_power_button_pressed()
             if current_state and not prev_state:
                 logging.info("Button pressed. Capturing photo...")
-
-                # Capture photo
-                photo_path = file_manager.get_new_file_path(SAVE_PATH, "jpg")
-                camera_manager.capture_photo(photo_path)
-
-                # Load and process the image
-                original_image = Image.open(photo_path)
-                resized_image = ImageProcessor.resize_image(original_image)
-                
-                # Get processing settings
-                processing_settings = camera_manager.settings.get("processing", {})
-                dithering_method = processing_settings.get("dithering_method", "floyd_steinberg")
-                saturation = processing_settings.get("saturation", 0.6)
-                brightness_factor = processing_settings.get("brightness_factor", 1.1)
-                color_factor = processing_settings.get("color_factor", 1.4)
-                bayer_size = processing_settings.get("bayer_size", 4)
-                threshold_scale = processing_settings.get("threshold_scale", 1.0)
-                
-                dithered_image = ImageProcessor.apply_dithering(
-                    resized_image, saturation, brightness_factor, color_factor,
-                    dithering_method, bayer_size, threshold_scale
-                )
-
-                # Save processed image
-                processed_path = file_manager.save_image(dithered_image, PROCESSED_PATH)
-
-                # Display on e-ink screen
-                eink_display.display_image(dithered_image)
-                logging.info("Photo captured and displayed.")
+                with _operation_lock:
+                    result = camera_system.capture_photo_api()
+                if result.get("success"):
+                    logging.info("Photo captured%s.", " and displayed" if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True) else "")
+                else:
+                    logging.error("Capture failed: %s", result.get("message", "unknown error"))
 
                 # Pause briefly to debounce and allow the user to view the image
                 sleep(2)
@@ -822,7 +928,12 @@ def main():
         logging.info("Program interrupted by user. Exiting...")
     finally:
         bus.close()
-        eink_display.sleep()
+        try:
+            # Put display to sleep if initialized inside CameraSystem
+            if camera_system and camera_system.eink_display:
+                camera_system.eink_display.sleep()
+        except Exception:
+            pass
 
 
 def demo_api_usage():
