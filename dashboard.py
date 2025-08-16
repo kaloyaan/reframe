@@ -666,6 +666,7 @@ async def dashboard():
                 </div>
                 <button class="button" onclick="capturePhoto()">capture photo</button>
                 <button class="button" onclick="openSettings()">settings</button>
+                <button class="button" onclick="clearScreen()">clear screen</button>
             </div>
             </div>
             
@@ -794,6 +795,23 @@ async def dashboard():
                 }
             }
             
+            async function clearScreen() {
+                try {
+                    const btn = document.querySelector('button[onclick="clearScreen()"]');
+                    if (btn) btn.disabled = true;
+                    const resp = await fetch('/api/display/clear', { method: 'POST' });
+                    if (!resp.ok) throw new Error(await resp.text());
+                    const data = await resp.json();
+                    alert(data.message || 'screen cleared');
+                } catch (error) {
+                    console.error('Error clearing screen:', error);
+                    alert('failed to clear screen');
+                } finally {
+                    const btn = document.querySelector('button[onclick="clearScreen()"]');
+                    if (btn) btn.disabled = false;
+                }
+            }
+
             function renderGallery() {
                 const grid = document.getElementById('photo-grid');
                 
@@ -1390,6 +1408,15 @@ async def get_system_status():
         return status
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Hardware service unavailable: {str(e)}")
+
+@app.post("/api/display/clear")
+async def clear_display():
+    """Proxy to clear the e-ink display on the hardware service."""
+    try:
+        resp = await reframe_client.post("/display/clear")
+        return resp
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear display: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

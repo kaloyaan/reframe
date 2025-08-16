@@ -138,7 +138,7 @@ class CameraManager:
             # Generate a new file path
             import time
             timestamp = str(int(time.time()))
-            file_path = os.path.join(SAVE_PATH, f"{timestamp}.jpg")
+            file_path = os.path.join(SAVE_PATH, f"{timestamp}.png")
         
         try:
             self.capture_photo(file_path)
@@ -424,10 +424,8 @@ class ImageProcessor:
                 threshold_scale=processing_settings.get("threshold_scale", 1.0)
             )
             
-            # Save processed image (convert palette mode to RGB for JPEG)
-            if dithered_image.mode == 'P':
-                dithered_image = dithered_image.convert('RGB')
-            dithered_image.save(output_path, format="JPEG")
+            # Save processed image as PNG (keep palette if present)
+            dithered_image.save(output_path, format="PNG")
             logging.info(f"Processed image saved to {output_path}")
             
             return {
@@ -450,7 +448,7 @@ class ImageProcessor:
         """Reprocess an existing photo by ID with new settings."""
         # Find the original photo
         original_path = None
-        for ext in ['jpg', 'jpeg', 'png']:
+        for ext in ['png', 'jpg', 'jpeg']:
             test_path = os.path.join(photos_path, f"{photo_id}.{ext}")
             if os.path.exists(test_path):
                 original_path = test_path
@@ -464,7 +462,7 @@ class ImageProcessor:
             }
         
         # Generate output path
-        output_file_path = os.path.join(output_path, f"{photo_id}_dithered.jpg")
+        output_file_path = os.path.join(output_path, f"{photo_id}_dithered.png")
         
         return ImageProcessor.process_photo_with_settings(original_path, output_file_path, processing_settings)
 
@@ -483,21 +481,11 @@ class FileManager:
         index = len(os.listdir(folder))
         return os.path.join(folder, f"{str(index).zfill(5)}.{extension}")
 
-    def save_image(self, image, folder, extension="jpg"):
+    def save_image(self, image, folder, extension="png"):
         """Saves the image to a unique file in the specified folder."""
         file_path = self.get_new_file_path(folder, extension)
-        # Choose image format based on extension
-        ext_lower = extension.lower()
-        if ext_lower in ("jpg", "jpeg"):
-            save_format = "JPEG"
-            # Convert palette mode to RGB for JPEG compatibility
-            if image.mode == 'P':
-                image = image.convert('RGB')
-        elif ext_lower == "png":
-            save_format = "PNG"
-        else:
-            save_format = "PNG"
-        image.save(file_path, format=save_format)
+        # Always save PNG by default
+        image.save(file_path, format="PNG")
         logging.info(f"Image saved to {file_path}")
         return file_path
 
@@ -505,7 +493,7 @@ class FileManager:
         """Get information about a specific photo by ID."""
         # Find original photo
         original_path = None
-        for ext in ['jpg', 'jpeg', 'png']:
+        for ext in ['png', 'jpg', 'jpeg']:
             test_path = os.path.join(self.save_path, f"{photo_id}.{ext}")
             if os.path.exists(test_path):
                 original_path = test_path
@@ -515,7 +503,7 @@ class FileManager:
             return None
         
         # Check for dithered version
-        dithered_path = os.path.join(self.processed_path, f"{photo_id}_dithered.jpg")
+        dithered_path = os.path.join(self.processed_path, f"{photo_id}_dithered.png")
         has_dithered = os.path.exists(dithered_path)
         
         # Get file stats
@@ -538,7 +526,7 @@ class FileManager:
         # Get all files from the save directory
         try:
             files = os.listdir(self.save_path)
-            photo_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+            photo_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
             
             for filename in sorted(photo_files, reverse=True):  # Newest first
                 photo_id = os.path.splitext(filename)[0]
@@ -556,7 +544,7 @@ class FileManager:
         deleted_files = []
         
         # Delete original
-        for ext in ['jpg', 'jpeg', 'png']:
+        for ext in ['png', 'jpg', 'jpeg']:
             original_path = os.path.join(self.save_path, f"{photo_id}.{ext}")
             if os.path.exists(original_path):
                 os.remove(original_path)
@@ -564,10 +552,13 @@ class FileManager:
                 break
         
         # Delete processed version
-        dithered_path = os.path.join(self.processed_path, f"{photo_id}_dithered.jpg")
-        if os.path.exists(dithered_path):
-            os.remove(dithered_path)
-            deleted_files.append(dithered_path)
+        # Delete processed version (both png and legacy jpg)
+        dithered_png = os.path.join(self.processed_path, f"{photo_id}_dithered.png")
+        dithered_jpg = os.path.join(self.processed_path, f"{photo_id}_dithered.jpg")
+        for p in (dithered_png, dithered_jpg):
+            if os.path.exists(p):
+                os.remove(p)
+                deleted_files.append(p)
         
         if deleted_files:
             logging.info(f"Deleted photo {photo_id}: {deleted_files}")
@@ -669,7 +660,7 @@ class CameraSystem:
         """API-style photo capture that returns metadata."""
         try:
             # Get a new file path
-            photo_path = self.file_manager.get_new_file_path(SAVE_PATH, "jpg")
+            photo_path = self.file_manager.get_new_file_path(SAVE_PATH, "png")
             
             # Capture photo with metadata
             result = self.camera_manager.capture_photo_with_metadata(photo_path)
@@ -677,7 +668,7 @@ class CameraSystem:
             if result["success"]:
                 # Process the image
                 processing_settings = self.camera_manager.settings.get("processing", {})
-                dithered_path = os.path.join(PROCESSED_PATH, f"{result['photo_id']}_dithered.jpg")
+                dithered_path = os.path.join(PROCESSED_PATH, f"{result['photo_id']}_dithered.png")
                 
                 process_result = ImageProcessor.process_photo_with_settings(
                     photo_path, dithered_path, processing_settings
@@ -864,6 +855,14 @@ if _API_AVAILABLE:
         if camera_system is None:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
         return camera_system.get_system_status_api()
+
+    @app.post("/api/display/clear")
+    def api_clear_display():
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        with _operation_lock:
+            return camera_system.eink_display.clear_display()
 
 
 def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
