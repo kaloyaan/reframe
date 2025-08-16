@@ -1299,22 +1299,47 @@ async def list_photos(page: int = 1, limit: int = 20):
         limit = 20
     # Fetch all photos from hardware service and paginate here for simplicity
     all_photos = await reframe_client.get("/photos")
+    # Rewrite absolute file system paths to dashboard-served URLs
+    for photo in all_photos:
+        try:
+            if photo.get("original_path"):
+                from os.path import basename as _bn
+                orig_name = _bn(photo["original_path"])
+                photo["original_path"] = f"/photos/{orig_name}"
+            if photo.get("dithered_path"):
+                from os.path import basename as _bn
+                dith_name = _bn(photo["dithered_path"])
+                photo["dithered_path"] = f"/dithered/{dith_name}"
+        except Exception:
+            continue
     start = (page - 1) * limit
     end = start + limit
     total = len(all_photos)
+    total_pages = (total + limit - 1) // limit if total else 1
     return {
-        "page": page,
-        "limit": limit,
-        "total": total,
-        "pages": (total + limit - 1) // limit,
         "photos": all_photos[start:end],
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total_photos": total,
+            "total_pages": total_pages,
+            "has_prev": page > 1,
+            "has_next": page < total_pages,
+        },
     }
 
 @app.get("/api/photos/{photo_id}")
 async def get_photo_info(photo_id: str):
     """Get information about a specific photo from the hardware service."""
     try:
-        return await reframe_client.get(f"/photos/{photo_id}")
+        photo = await reframe_client.get(f"/photos/{photo_id}")
+        # Rewrite paths to URLs served by this dashboard
+        from os.path import basename as _bn
+        if photo.get("original_path"):
+            photo["original_path"] = f"/photos/{_bn(photo['original_path'])}"
+        if photo.get("dithered_path"):
+            photo["dithered_path"] = f"/dithered/{_bn(photo['dithered_path'])}"
+        return photo
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1376,6 +1401,15 @@ async def capture_photo(background_tasks: BackgroundTasks):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/display/clear")
+async def clear_display():
+    """Proxy to clear the e-ink display on the hardware service."""
+    try:
+        resp = await reframe_client.post("/display/clear")
+        return resp
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear display: {str(e)}")
+
 @app.post("/api/display/{photo_id}")
 async def display_photo_on_screen(photo_id: str):
     """Display a specific photo on the e-ink screen."""
@@ -1408,15 +1442,6 @@ async def get_system_status():
         return status
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Hardware service unavailable: {str(e)}")
-
-@app.post("/api/display/clear")
-async def clear_display():
-    """Proxy to clear the e-ink display on the hardware service."""
-    try:
-        resp = await reframe_client.post("/display/clear")
-        return resp
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to clear display: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
