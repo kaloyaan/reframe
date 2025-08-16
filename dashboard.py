@@ -79,8 +79,7 @@ class SettingsManager:
                 "resolution": {"width": 1200, "height": 800},
                 "exposure_value": -0.25,
                 "sharpness": 3,
-                "autofocus_mode": 2,
-                "hdr_enabled": False
+                "autofocus_mode": 2
             },
             "processing": {
                 "saturation": 0.6,

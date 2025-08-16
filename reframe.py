@@ -65,8 +65,7 @@ class CameraManager:
                     "resolution": {"width": 1200, "height": 800},
                     "exposure_value": -0.25,
                     "sharpness": 3,
-                    "autofocus_mode": 2,
-                    "hdr_enabled": False
+                    "autofocus_mode": 2
                 },
                 "processing": {
                     "saturation": 0.6,
@@ -100,23 +99,23 @@ class CameraManager:
         if camera_settings is None:
             camera_settings = self.settings.get("camera", {})
         
-        try:
-            # Update only the controls that can be changed while running
-            controls = {}
+        # Update only the controls that can be changed while running
+        controls = {}
+        
+        if "exposure_value" in camera_settings:
+            controls["ExposureValue"] = camera_settings["exposure_value"]
+        if "sharpness" in camera_settings:
+            controls["Sharpness"] = camera_settings["sharpness"]
+        if "autofocus_mode" in camera_settings:
+            controls["AfMode"] = camera_settings["autofocus_mode"]
             
-            if "exposure_value" in camera_settings:
-                controls["ExposureValue"] = camera_settings["exposure_value"]
-            if "sharpness" in camera_settings:
-                controls["Sharpness"] = camera_settings["sharpness"]
-            if "autofocus_mode" in camera_settings:
-                controls["AfMode"] = camera_settings["autofocus_mode"]
-                
-            if controls:
-                self.picam2.set_controls(controls)
-                logging.info(f"Applied camera controls: {controls}")
-                
-        except Exception as e:
-            logging.error(f"Error applying camera settings: {e}")
+        # Apply controls one by one to handle unsupported controls gracefully
+        for control_name, control_value in controls.items():
+            try:
+                self.picam2.set_controls({control_name: control_value})
+                logging.info(f"Applied {control_name}: {control_value}")
+            except Exception as e:
+                logging.warning(f"Could not set {control_name}: {e}")
 
     def capture_photo_with_metadata(self, file_path=None):
         """Capture a photo and return metadata like the dashboard API."""
@@ -182,24 +181,28 @@ class CameraManager:
             "Sharpness": camera_settings.get("sharpness", 3)
         }
         
-        # Add HDR control if enabled (note: this may not work with all Picamera2 versions)
-        if camera_settings.get("hdr_enabled", False):
-            try:
-                # Some versions of Picamera2 may support HDR controls
-                controls["HdrMode"] = 1
-                logging.info("HDR enabled via Picamera2 controls")
-            except Exception as e:
-                logging.info("HDR control not available in Picamera2, using hardware method")
-            
-            # Always try the hardware method as well for Camera Module 3
-            self.enable_hdr_hardware()
+        # Always enable HDR via hardware method for Camera Module 3
+        self.enable_hdr_hardware()
         
         camera_config["controls"] = controls
-        self.picam2.configure(camera_config)
         
-        # Set autofocus mode
-        af_mode = camera_settings.get("autofocus_mode", 2)
-        self.picam2.set_controls({"AfMode": af_mode})
+        try:
+            self.picam2.configure(camera_config)
+        except Exception as e:
+            logging.error(f"Error configuring camera: {e}")
+            # Try with basic configuration without custom controls
+            basic_config = self.picam2.create_still_configuration(
+                main={"size": (resolution["width"], resolution["height"])}
+            )
+            self.picam2.configure(basic_config)
+            logging.info("Using basic camera configuration")
+        
+        # Set autofocus mode safely
+        try:
+            af_mode = camera_settings.get("autofocus_mode", 2)
+            self.picam2.set_controls({"AfMode": af_mode})
+        except Exception as e:
+            logging.warning(f"Could not set autofocus mode: {e}")
         
         self.picam2.start()
 
