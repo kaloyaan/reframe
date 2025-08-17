@@ -410,7 +410,7 @@ class ImageProcessor:
             
             # Calculate channel-weighted distances (same weights as ordered dithering)
             channel_weights = np.array([0.6, 0.6, 1.8], dtype=np.float32)  # R, G, B weights
-            diff = pixels_flat[:, np.newaxis, :] - palette_array[np.newaxis, np.newaxis, :]
+            diff = pixels_flat[:, np.newaxis, :] - palette_array[np.newaxis, :, :]
             distances = np.sum((diff * diff) * channel_weights[np.newaxis, np.newaxis, :], axis=2)
             
             # Find closest palette index for each pixel
