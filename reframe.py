@@ -1116,6 +1116,20 @@ def main():
     # Initialize camera system once for both API and button loop
     camera_system = CameraSystem()
 
+    # Take an initial photo on startup
+    logging.info("Taking initial startup photo...")
+    try:
+        with _operation_lock:
+            result = camera_system.capture_photo_api()
+        if result.get("success"):
+            logging.info("Startup photo captured successfully: %s", result.get("photo_id", "unknown"))
+            if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True):
+                logging.info("Startup photo displayed on screen")
+        else:
+            logging.warning("Failed to capture startup photo: %s", result.get("message", "unknown error"))
+    except Exception as e:
+        logging.error("Error taking startup photo: %s", e)
+
     # Initialize I2C for power button detection
     I2C_ADDRESS = 0x57
     BUTTON_REGISTER = 0x02
