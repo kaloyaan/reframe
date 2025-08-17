@@ -356,7 +356,9 @@ class ImageProcessor:
     def palette_blend(saturation, dtype='uint8'):
         """Blend between desaturated and saturated palettes based on saturation."""
         palette = []
-        color_indices = [0, 1, 5, 4, 0, 3, 2]
+        # Use 6 unique colors for fair quantization: black, white, yellow, red, blue, green
+        # (Remove duplicate black to prevent bias toward dark colors in Floyd-Steinberg)
+        color_indices = [0, 1, 5, 4, 3, 2]  # Maps to: black, white, yellow, red, blue, green
         for i in color_indices:
             rs, gs, bs = [c * saturation for c in SATURATED_PALETTE[i]]
             rd, gd, bd = [c * (1.0 - saturation) for c in DESATURATED_PALETTE[i]]
