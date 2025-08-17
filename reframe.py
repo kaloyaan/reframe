@@ -356,9 +356,7 @@ class ImageProcessor:
     def palette_blend(saturation, dtype='uint8'):
         """Blend between desaturated and saturated palettes based on saturation."""
         palette = []
-        # Use 6 unique colors for fair quantization: black, white, yellow, red, blue, green
-        # (Remove duplicate black to prevent bias toward dark colors in Floyd-Steinberg)
-        color_indices = [0, 1, 5, 4, 3, 2]  # Maps to: black, white, yellow, red, blue, green
+        color_indices = [0, 1, 5, 4, 0, 3, 2]
         for i in color_indices:
             rs, gs, bs = [c * saturation for c in SATURATED_PALETTE[i]]
             rd, gd, bd = [c * (1.0 - saturation) for c in DESATURATED_PALETTE[i]]
@@ -399,26 +397,6 @@ class ImageProcessor:
 
             # Convert the image using the custom palette and Floyd-Steinberg dithering
             converted_image = image.quantize(palette=palette_image, dither=Image.FLOYDSTEINBERG)
-            
-            # Post-process to reduce yellow bias in light areas
-            # Convert back to array to fix yellow bleeding in near-white areas
-            try:
-                img_array = np.array(image)
-                converted_array = np.array(converted_image)
-                
-                # Find light pixels that got mapped to yellow (index 2)
-                is_light = np.mean(img_array, axis=2) > 200  # Light areas
-                is_yellow = converted_array == 2  # Yellow pixels in result
-                
-                # Change light yellow pixels to white
-                light_yellow_mask = is_light & is_yellow
-                converted_array[light_yellow_mask] = 1  # Map to white
-                
-                converted_image = Image.fromarray(converted_array, mode='P')
-                converted_image.putpalette(palette_image.getpalette())
-            except Exception as e:
-                logging.warning(f"Could not apply yellow bias correction: {e}")
-                # Fall back to original converted_image
 
             # Avoid hardware "clear" index (4) — remap any 4 -> 0 (black)
             try:
