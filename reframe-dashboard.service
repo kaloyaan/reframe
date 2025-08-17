@@ -1,0 +1,22 @@
+[Unit]
+Description=Reframe Dashboard Service
+After=network.target reframe.service
+Wants=network.target
+Requires=reframe.service
+
+[Service]
+Type=simple
+User=cam
+Group=cam
+WorkingDirectory=/home/cam/reframe
+ExecStart=/usr/bin/python3 /home/cam/reframe/dashboard.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardware access permissions (same as reframe service)
+SupplementaryGroups=video i2c spi gpio
+
+[Install]
+WantedBy=multi-user.target

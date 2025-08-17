@@ -304,11 +304,9 @@ class ImageProcessor:
         pixels_flat = img_array.reshape(-1, 3)
         threshold_flat = threshold_matrix.flatten()
         
-        # Calculate channel-weighted distances to reduce yellow skies
-        # Upweight blue differences, downweight R/G so near-white blues prefer white+blue over white+yellow
-        channel_weights = np.array([0.6, 0.6, 1.8], dtype=np.float32)  # R, G, B weights
-        diff = pixels_flat[:, np.newaxis, :] - palette_array[np.newaxis, :, :]
-        base_distances = np.sum((diff * diff) * channel_weights[np.newaxis, np.newaxis, :], axis=2)
+        # Calculate base distances to all palette colors without threshold
+        # pixels_flat: (H*W, 3), palette_array: (N_colors, 3) -> distances: (H*W, N_colors)
+        base_distances = np.sum((pixels_flat[:, np.newaxis, :] - palette_array[np.newaxis, :, :]) ** 2, axis=2)
         
         # Find the two closest colors for each pixel
         sorted_indices = np.argsort(base_distances, axis=1)
@@ -397,29 +395,8 @@ class ImageProcessor:
             palette_image = Image.new("P", (1, 1))
             palette_image.putpalette(palette + [0, 0, 0] * (256 - len(palette) // 3))
 
-            # Convert to RGB array for custom distance calculation
-            img_array = np.array(image, dtype=np.float32)
-            height, width, channels = img_array.shape
-            pixels_flat = img_array.reshape(-1, 3)
-            
-            # Get palette colors as array
-            palette_colors = []
-            for i in range(0, len(palette), 3):
-                palette_colors.append([palette[i], palette[i+1], palette[i+2]])
-            palette_array = np.array(palette_colors, dtype=np.float32)
-            
-            # Calculate channel-weighted distances (same weights as ordered dithering)
-            channel_weights = np.array([0.6, 0.6, 1.8], dtype=np.float32)  # R, G, B weights
-            diff = pixels_flat[:, np.newaxis, :] - palette_array[np.newaxis, :, :]
-            distances = np.sum((diff * diff) * channel_weights[np.newaxis, np.newaxis, :], axis=2)
-            
-            # Find closest palette index for each pixel
-            closest_indices = np.argmin(distances, axis=1)
-            
-            # Create output image with custom palette mapping
-            output_array = closest_indices.reshape(height, width).astype(np.uint8)
-            converted_image = Image.fromarray(output_array, mode='P')
-            converted_image.putpalette(palette_image.getpalette())
+            # Convert the image using the custom palette and Floyd-Steinberg dithering
+            converted_image = image.quantize(palette=palette_image, dither=Image.FLOYDSTEINBERG)
 
             # Avoid hardware "clear" index (4) — remap any 4 -> 0 (black)
             try:
