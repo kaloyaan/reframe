@@ -326,6 +326,12 @@ class ImageProcessor:
         
         # Reshape back to image dimensions
         output_array = closest_indices.reshape(height, width).astype(np.uint8)
+        # Ensure we never use the panel's "clear" index (4). Remap any 4 -> 0 (black)
+        try:
+            output_array[output_array == 4] = 0
+        except Exception:
+            # Fallback in case of unexpected types
+            output_array = np.where(output_array == 4, 0, output_array).astype(np.uint8)
 
         # Create palette image
         palette_flat = []
@@ -388,6 +394,16 @@ class ImageProcessor:
             # Convert the image using the custom palette and Floyd-Steinberg dithering
             converted_image = image.quantize(palette=palette_image, dither=Image.FLOYDSTEINBERG)
 
+            # Avoid hardware "clear" index (4) — remap any 4 -> 0 (black)
+            try:
+                converted_array = np.array(converted_image, dtype=np.uint8)
+                converted_array[converted_array == 4] = 0
+                converted_image = Image.fromarray(converted_array, mode='P')
+                converted_image.putpalette(palette_image.getpalette())
+            except Exception:
+                # If anything goes wrong, fall back to original converted_image
+                pass
+
             return converted_image
 
     @staticmethod
@@ -411,6 +427,13 @@ class ImageProcessor:
             return None
 
         buf_6color = np.frombuffer(image_temp.tobytes('raw'), dtype=np.uint8)
+        # Copy to allow in-place edits and ensure we never emit index 4 (panel "clear")
+        try:
+            buf_6color = buf_6color.copy()
+            buf_6color[buf_6color == 4] = 0
+        except Exception:
+            # Fallback safe mapping without in-place mutation
+            buf_6color = np.where(buf_6color == 4, 0, buf_6color).astype(np.uint8)
         buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
         buf = buf.astype(np.uint8).tolist()
 
