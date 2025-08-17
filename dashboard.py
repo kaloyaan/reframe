@@ -545,6 +545,12 @@ async def dashboard():
                 /* outline: 2px solid var(--secondary-color); */
             }
             
+            .setting-help {
+                font-size: 0.9rem;
+                color: #666;
+                margin-left: 200px;
+            }
+            
             .disabled-setting {
                 opacity: 0.5;
                 pointer-events: none;
@@ -727,14 +733,17 @@ async def dashboard():
                     <div class="setting-group">
                         <span class="setting-label">Saturation:</span>
                         <input type="number" id="saturation" class="setting-input" step="0.1" min="0" max="2">
+                        <div class="setting-help">Blends between muted and saturated 6-color palettes; recommended 0.55–0.70 for natural tones.</div>
                     </div>
                     <div class="setting-group">
                         <span class="setting-label">Brightness Factor:</span>
                         <input type="number" id="brightness-factor" class="setting-input" step="0.1" min="0.1" max="3">
+                        <div class="setting-help">Multiplies image brightness before dithering; recommended 1.0–1.1.</div>
                     </div>
                     <div class="setting-group">
                         <span class="setting-label">Color Factor:</span>
                         <input type="number" id="color-factor" class="setting-input" step="0.1" min="0.1" max="3">
+                        <div class="setting-help">Boosts color intensity before dithering; recommended 1.1–1.3.</div>
                     </div>
                     <div class="setting-group">
                         <span class="setting-label">dithering method:</span>
@@ -742,6 +751,7 @@ async def dashboard():
                             <option value="floyd_steinberg">floyd steinberg</option>
                             <option value="ordered">ordered (bayer)</option>
                         </select>
+                        <div class="setting-help">Floyd–Steinberg is the default; ordered is still experimental</div>
                     </div>
                     <div class="setting-group" id="bayer-settings">
                         <span class="setting-label">bayer matrix size:</span>
