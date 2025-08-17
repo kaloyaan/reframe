@@ -426,16 +426,77 @@ class ImageProcessor:
             logging.warning(f"Invalid image dimensions: {imwidth}x{imheight}, expected {width}x{height}")
             return None
 
-        buf_6color = np.frombuffer(image_temp.tobytes('raw'), dtype=np.uint8)
-        # Copy to allow in-place edits and ensure we never emit index 4 (panel "clear")
+        # Map any palette indices or RGB values to the panel's fixed nibble indices.
+        # Hardware palette indices expected by the panel (nibbles):
+        # 0:black, 1:white, 2:yellow, 3:red, 4:clear/duplicate-black (do not use), 5:blue, 6:green
+        # We'll map every pixel to the closest of {0,1,2,3,5,6} and never emit 4.
         try:
-            buf_6color = buf_6color.copy()
-            buf_6color[buf_6color == 4] = 0
-        except Exception:
-            # Fallback safe mapping without in-place mutation
-            buf_6color = np.where(buf_6color == 4, 0, buf_6color).astype(np.uint8)
-        buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
-        buf = buf.astype(np.uint8).tolist()
+            # Ensure we have a palette image to read indices from
+            if image_temp.mode != 'P':
+                pal_image = Image.new('P', (1, 1))
+                # Build palette matching driver order so indices match hardware mapping
+                pal_image.putpalette([
+                    0, 0, 0,      # 0 black
+                    255, 255, 255,# 1 white
+                    255, 255, 0,  # 2 yellow
+                    255, 0, 0,    # 3 red
+                    0, 0, 0,      # 4 duplicate black (panel clear)
+                    0, 0, 255,    # 5 blue
+                    0, 255, 0,    # 6 green
+                ] + [0, 0, 0] * (256 - 7))
+                # Quantize without dithering to preserve the existing pattern as much as possible
+                image_temp = image_temp.convert('RGB').quantize(palette=pal_image, dither=Image.NONE)
+
+            # Build source palette -> hardware index map using nearest color, excluding index 4
+            pal = image_temp.getpalette()
+            if pal is None:
+                raise ValueError('Palette missing after conversion to P')
+            src_colors = [pal[i:i+3] for i in range(0, min(len(pal), 256 * 3), 3)]
+
+            # Hardware color set (exclude index 4)
+            hw_indices = np.array([0, 1, 2, 3, 5, 6], dtype=np.uint8)
+            hw_colors = np.array([
+                [0, 0, 0],
+                [255, 255, 255],
+                [255, 255, 0],
+                [255, 0, 0],
+                [0, 0, 255],
+                [0, 255, 0],
+            ], dtype=np.float32)
+
+            # Create a 256-element map from source palette index to hardware nibble index
+            idx_map = np.zeros(256, dtype=np.uint8)
+            for s_idx in range(256):
+                if s_idx < len(src_colors):
+                    r, g, b = src_colors[s_idx]
+                    color_vec = np.array([[float(r), float(g), float(b)]], dtype=np.float32)
+                    dists = np.sum((hw_colors - color_vec) ** 2, axis=1)
+                    mapped = int(hw_indices[int(np.argmin(dists))])
+                    # Never allow 4; nearest set excludes 4 already. Keep mapped as is.
+                    idx_map[s_idx] = np.uint8(mapped)
+                else:
+                    # Uninitialized palette slots default to white
+                    idx_map[s_idx] = 1
+
+            # Apply mapping to pixel indices and pack nibbles
+            src_indices = np.frombuffer(image_temp.tobytes('raw'), dtype=np.uint8)
+            hw_pixels = idx_map[src_indices]
+            # Double safety: remap any stray 4 -> 0
+            if (hw_pixels == 4).any():
+                hw_pixels = np.where(hw_pixels == 4, 0, hw_pixels).astype(np.uint8)
+            buf = (hw_pixels[0::2].astype(np.uint8) << 4) + hw_pixels[1::2].astype(np.uint8)
+            buf = buf.astype(np.uint8).tolist()
+        except Exception as e:
+            logging.warning(f"img2buffer: palette mapping fallback due to: {e}")
+            # Fallback: direct indices with 4 -> 0 remap
+            buf_6color = np.frombuffer(image_temp.tobytes('raw'), dtype=np.uint8)
+            try:
+                buf_6color = buf_6color.copy()
+                buf_6color[buf_6color == 4] = 0
+            except Exception:
+                buf_6color = np.where(buf_6color == 4, 0, buf_6color).astype(np.uint8)
+            buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
+            buf = buf.astype(np.uint8).tolist()
 
         return buf
 
