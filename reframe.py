@@ -135,10 +135,9 @@ class CameraManager:
     def capture_photo_with_metadata(self, file_path=None):
         """Capture a photo and return metadata like the dashboard API."""
         if file_path is None:
-            # Generate a new file path
-            import time
-            timestamp = str(int(time.time()))
-            file_path = os.path.join(SAVE_PATH, f"{timestamp}.png")
+            # Use FileManager to get consistent naming
+            file_manager = FileManager(SAVE_PATH, PROCESSED_PATH)
+            file_path = file_manager.get_new_file_path(SAVE_PATH, "png")
         
         try:
             self.capture_photo(file_path)
@@ -260,7 +259,10 @@ class ImageProcessor:
     @staticmethod
     def apply_ordered_dithering(image, saturation=0.6, brightness_factor=1.1, color_factor=1.4, 
                                bayer_size=4, threshold_scale=1.0):
-        """Apply ordered dithering using Bayer matrix."""
+        """Apply optimized ordered dithering using Bayer matrix."""
+        import time
+        start_time = time.time()
+        
         # Ensure the image is in RGB mode
         if image.mode != "RGB":
             image = image.convert("RGB")
@@ -285,35 +287,45 @@ class ImageProcessor:
         img_array = np.array(image, dtype=np.float32)
         height, width, channels = img_array.shape
 
-        # Get Bayer matrix
+        # Get Bayer matrix and tile it to cover the entire image
         bayer_matrix = ImageProcessor.get_bayer_matrix(bayer_size)
         
-        # Create output array
-        output_array = np.zeros((height, width), dtype=np.uint8)
-
-        # Apply ordered dithering
-        for y in range(height):
-            for x in range(width):
-                # Get pixel values
-                pixel = img_array[y, x]
-                
-                # Get threshold from Bayer matrix
-                threshold = bayer_matrix[y % bayer_size, x % bayer_size] * threshold_scale * 255
-                
-                # Find closest palette colors
-                min_distance = float('inf')
-                closest_index = 0
-                
-                for i, palette_color in enumerate(palette_colors):
-                    # Calculate distance with dithering threshold
-                    adjusted_pixel = pixel + (threshold - 127.5)
-                    distance = np.sum((adjusted_pixel - palette_color) ** 2)
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        closest_index = i
-                
-                output_array[y, x] = closest_index
+        # Create tiled threshold matrix for the entire image (OPTIMIZATION: vectorized)
+        y_tiles = (height + bayer_size - 1) // bayer_size
+        x_tiles = (width + bayer_size - 1) // bayer_size
+        threshold_matrix = np.tile(bayer_matrix, (y_tiles, x_tiles))[:height, :width]
+        threshold_matrix = threshold_matrix * threshold_scale
+        
+        # Convert palette to numpy array for vectorized operations
+        palette_array = np.array(palette_colors, dtype=np.float32)
+        
+        # OPTIMIZATION: Vectorized distance calculation
+        # Reshape image for broadcasting: (H*W, 3)
+        pixels_flat = img_array.reshape(-1, 3)
+        threshold_flat = threshold_matrix.flatten()
+        
+        # Calculate base distances to all palette colors without threshold
+        # pixels_flat: (H*W, 3), palette_array: (N_colors, 3) -> distances: (H*W, N_colors)
+        base_distances = np.sum((pixels_flat[:, np.newaxis, :] - palette_array[np.newaxis, :, :]) ** 2, axis=2)
+        
+        # Find the two closest colors for each pixel
+        sorted_indices = np.argsort(base_distances, axis=1)
+        closest_color1 = sorted_indices[:, 0]  # Closest color
+        closest_color2 = sorted_indices[:, 1]  # Second closest color
+        
+        # FIXED: Proper ordered dithering - use threshold to choose between two closest colors
+        # Normalize threshold to [0, 1] range
+        normalized_threshold = threshold_flat
+        
+        # For each pixel, decide between closest and second closest based on threshold
+        # If threshold > random value, use second closest color (adds dithering pattern)
+        use_second_color = normalized_threshold > 0.5
+        
+        # Create final color indices
+        closest_indices = np.where(use_second_color, closest_color2, closest_color1)
+        
+        # Reshape back to image dimensions
+        output_array = closest_indices.reshape(height, width).astype(np.uint8)
 
         # Create palette image
         palette_flat = []
@@ -325,6 +337,9 @@ class ImageProcessor:
         output_image = Image.fromarray(output_array, mode='P')
         output_image.putpalette(palette_flat)
 
+        end_time = time.time()
+        logging.info(f"Ordered dithering completed in {(end_time - start_time)*1000:.1f}ms for {height}x{width} image")
+        
         return output_image
 
     @staticmethod
@@ -661,14 +676,17 @@ class CameraSystem:
         try:
             # Get a new file path
             photo_path = self.file_manager.get_new_file_path(SAVE_PATH, "png")
+            logging.info(f"Capturing photo to: {photo_path}")
             
             # Capture photo with metadata
             result = self.camera_manager.capture_photo_with_metadata(photo_path)
             
             if result["success"]:
+                logging.info(f"Photo captured successfully: {result['photo_id']}")
                 # Process the image
                 processing_settings = self.camera_manager.settings.get("processing", {})
                 dithered_path = os.path.join(PROCESSED_PATH, f"{result['photo_id']}_dithered.png")
+                logging.info(f"Processing to: {dithered_path}")
                 
                 process_result = ImageProcessor.process_photo_with_settings(
                     photo_path, dithered_path, processing_settings
@@ -676,11 +694,15 @@ class CameraSystem:
                 
                 if process_result["success"]:
                     result["processed_path"] = dithered_path
+                    logging.info(f"Dithered version created: {dithered_path}")
                     
                     # Auto-display if enabled
                     display_settings = self.camera_manager.settings.get("display", {})
                     if display_settings.get("auto_display", True):
+                        logging.info("Auto-displaying photo")
                         self.eink_display.display_photo_by_id(result["photo_id"], self.file_manager)
+                else:
+                    logging.error(f"Processing failed: {process_result.get('error', 'unknown error')}")
                 
             return result
             

@@ -1443,6 +1443,15 @@ async def get_system_status():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Hardware service unavailable: {str(e)}")
 
+@app.post("/api/photos/{photo_id}/reprocess")
+async def reprocess_single_photo(photo_id: str):
+    """Reprocess a single photo to create missing dithered version."""
+    try:
+        result = await reframe_client.post(f"/reprocess/{photo_id}")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reprocess photo: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
