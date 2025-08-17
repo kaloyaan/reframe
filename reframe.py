@@ -275,9 +275,9 @@ class ImageProcessor:
         enhancer = ImageEnhance.Color(image)
         image = enhancer.enhance(color_factor)
 
-        # Get the blended palette
+        # Get the blended palette (unique colors in hardware order: K, W, Y, R, B, G)
         palette_colors = []
-        color_indices = [0, 1, 5, 4, 0, 3, 2]
+        color_indices = [0, 1, 5, 4, 3, 2]
         for i in color_indices:
             rs, gs, bs = [c * saturation for c in SATURATED_PALETTE[i]]
             rd, gd, bd = [c * (1.0 - saturation) for c in DESATURATED_PALETTE[i]]
@@ -317,9 +317,13 @@ class ImageProcessor:
         # Normalize threshold to [0, 1] range
         normalized_threshold = threshold_flat
         
-        # For each pixel, decide between closest and second closest based on threshold
-        # If threshold > random value, use second closest color (adds dithering pattern)
-        use_second_color = normalized_threshold > 0.5
+        # For each pixel, decide between the two closest based on relative distances.
+        # Probability of choosing the second color increases as it gets closer to the pixel
+        # compared to the first. ratio = d1/(d1 + d2) ∈ (0, 0.5]; choose second if threshold < ratio.
+        d1 = base_distances[np.arange(base_distances.shape[0]), closest_color1]
+        d2 = base_distances[np.arange(base_distances.shape[0]), closest_color2]
+        ratio = d1 / (d1 + d2 + 1e-9)
+        use_second_color = normalized_threshold < ratio
         
         # Create final color indices
         closest_indices = np.where(use_second_color, closest_color2, closest_color1)
