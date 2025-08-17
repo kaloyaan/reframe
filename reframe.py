@@ -25,6 +25,7 @@ except Exception:
     uvicorn = None  # type: ignore
 
 import threading
+import time
 
 libdir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'lib')
 if os.path.exists(libdir):
@@ -65,6 +66,7 @@ class CameraManager:
         self.settings_path = settings_path
         self.settings = self.load_settings()
         self.picam2 = Picamera2()
+        self.last_activity_time = time.time()
         self.configure_camera()
 
     def load_settings(self):
@@ -219,9 +221,46 @@ class CameraManager:
             logging.warning(f"Could not set autofocus mode: {e}")
         
         self.picam2.start()
+    
+    def update_activity_time(self):
+        """Update the last activity timestamp."""
+        self.last_activity_time = time.time()
+    
+    def is_timeout_enabled(self):
+        """Check if auto-timeout is enabled in settings."""
+        return self.settings.get("system", {}).get("auto_timeout_enabled", True)
+    
+    def get_timeout_minutes(self):
+        """Get the timeout duration in minutes from settings."""
+        return self.settings.get("system", {}).get("auto_timeout_minutes", 10)
+    
+    def is_timeout_exceeded(self):
+        """Check if the timeout period has been exceeded."""
+        if not self.is_timeout_enabled():
+            return False
+        
+        timeout_seconds = self.get_timeout_minutes() * 60
+        elapsed = time.time() - self.last_activity_time
+        return elapsed > timeout_seconds
+    
+    def shutdown_system(self):
+        """Safely shutdown the entire Raspberry Pi system to save battery."""
+        try:
+            timeout_minutes = self.get_timeout_minutes()
+            logging.info(f"System has been inactive for {timeout_minutes} minutes. Shutting down to save battery...")
+            logging.info("To use the camera again, manually power on the Raspberry Pi")
+            # Give a moment for logging to flush
+            time.sleep(2)
+            # Execute system shutdown command
+            subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
+            return True
+        except Exception as e:
+            logging.error(f"Error shutting down system: {e}")
+            return False
 
     def capture_photo(self, file_path):
         """Capture a photo and save it to the specified file path."""
+        self.update_activity_time()
         sleep(1)  # Allow autofocus to complete
         self.picam2.capture_file(file_path)  # Capture the photo
         logging.info(f"Photo saved to {file_path}")
@@ -758,6 +797,47 @@ class CameraSystem:
         self.camera_manager = CameraManager(settings_path)
         self.file_manager = FileManager(SAVE_PATH, PROCESSED_PATH)
         self.eink_display = EInkDisplay()
+        self.timeout_thread = None
+        self.timeout_running = False
+        self.start_timeout_monitor()
+    
+    def start_timeout_monitor(self):
+        """Start the background timeout monitoring thread."""
+        if self.camera_manager.is_timeout_enabled():
+            self.timeout_running = True
+            self.timeout_thread = threading.Thread(target=self._timeout_monitor_loop, daemon=True)
+            self.timeout_thread.start()
+            logging.info(f"Auto-timeout monitor started: {self.camera_manager.get_timeout_minutes()} minutes")
+    
+    def stop_timeout_monitor(self):
+        """Stop the background timeout monitoring thread."""
+        self.timeout_running = False
+        if self.timeout_thread and self.timeout_thread.is_alive():
+            self.timeout_thread.join(timeout=1)
+    
+    def _timeout_monitor_loop(self):
+        """Background loop that checks for timeout and shuts down system."""
+        while self.timeout_running:
+            try:
+                if self.camera_manager.is_timeout_exceeded():
+                    logging.info("Timeout exceeded, initiating system shutdown")
+                    self.camera_manager.shutdown_system()
+                    # If we reach here, shutdown failed, so stop monitoring
+                    break
+                
+                # Check every 30 seconds
+                for _ in range(30):
+                    if not self.timeout_running:
+                        break
+                    time.sleep(1)
+                    
+            except Exception as e:
+                logging.error(f"Error in timeout monitor: {e}")
+                time.sleep(10)  # Wait before retrying
+    
+    def update_activity(self):
+        """Update activity time."""
+        self.camera_manager.update_activity_time()
         
     def capture_photo_api(self):
         """API-style photo capture that returns metadata."""
@@ -887,6 +967,7 @@ if _API_AVAILABLE:
         if camera_system is None:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
         with _operation_lock:
+            camera_system.update_activity()
             result = camera_system.capture_photo_api()
         return result
 
@@ -896,6 +977,7 @@ if _API_AVAILABLE:
         if camera_system is None:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
         with _operation_lock:
+            camera_system.update_activity()
             result = camera_system.display_photo_api(photo_id)
         return result
 
@@ -918,6 +1000,7 @@ if _API_AVAILABLE:
         global camera_system
         if camera_system is None:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
+        camera_system.update_activity()
         return camera_system.list_photos_api()
 
     @app.get("/api/photos/{photo_id}")
@@ -944,7 +1027,11 @@ if _API_AVAILABLE:
         if camera_system is None:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
         with _operation_lock:
-            return camera_system.reload_settings_api()
+            result = camera_system.reload_settings_api()
+            # Restart timeout monitor if settings changed
+            camera_system.stop_timeout_monitor()
+            camera_system.start_timeout_monitor()
+            return result
 
     @app.post("/api/settings/apply")
     async def api_apply_settings(request: Request):
@@ -965,6 +1052,42 @@ if _API_AVAILABLE:
         if camera_system is None:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
         return camera_system.get_system_status_api()
+    
+    @app.post("/api/timeout/reset")
+    def api_reset_timeout():
+        """Reset the timeout timer (extend the timeout period)."""
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        
+        camera_system.update_activity()
+        return {"status": "success", "message": "Timeout timer reset"}
+    
+    @app.get("/api/timeout/status")
+    def api_get_timeout_status():
+        """Get current timeout status and remaining time."""
+        global camera_system
+        if camera_system is None:
+            raise HTTPException(status_code=503, detail="Camera system not initialized")
+        
+        timeout_enabled = camera_system.camera_manager.is_timeout_enabled()
+        timeout_minutes = camera_system.camera_manager.get_timeout_minutes()
+        
+        if timeout_enabled:
+            elapsed = time.time() - camera_system.camera_manager.last_activity_time
+            remaining_seconds = max(0, (timeout_minutes * 60) - elapsed)
+            remaining_minutes = remaining_seconds / 60
+        else:
+            remaining_seconds = None
+            remaining_minutes = None
+        
+        return {
+            "timeout_enabled": timeout_enabled,
+            "timeout_minutes": timeout_minutes,
+            "remaining_seconds": remaining_seconds,
+            "remaining_minutes": remaining_minutes,
+            "last_activity": camera_system.camera_manager.last_activity_time
+        }
 
     @app.post("/api/display/clear")
     def api_clear_display():
@@ -1038,9 +1161,11 @@ def main():
     finally:
         bus.close()
         try:
-            # Put display to sleep if initialized inside CameraSystem
-            if camera_system and camera_system.eink_display:
-                camera_system.eink_display.sleep()
+            # Stop timeout monitor and put display to sleep if initialized inside CameraSystem
+            if camera_system:
+                camera_system.stop_timeout_monitor()
+                if camera_system.eink_display:
+                    camera_system.eink_display.sleep()
         except Exception:
             pass
 

@@ -21,6 +21,8 @@
     "display_timeout": 0
   },
   "system": {
-    "auto_refresh_interval": 30
+    "auto_refresh_interval": 30,
+    "auto_timeout_minutes": 10,
+    "auto_timeout_enabled": true
   }
 }

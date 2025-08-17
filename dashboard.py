@@ -50,7 +50,9 @@ class SettingsManager:
                 "display_timeout": 0
             },
             "system": {
-                "auto_refresh_interval": 30
+                "auto_refresh_interval": 30,
+                "auto_timeout_minutes": 10,
+                "auto_timeout_enabled": True
             }
         }
         self._ensure_settings_file()
@@ -522,15 +524,15 @@ async def dashboard():
             .setting-group {
                 margin-bottom: 20px;
                 display: flex;
-                justify-content: space-between;
-                align-items: center;
-                flex-wrap: wrap;
+                flex-direction: column;
+                align-items: flex-start;
                 gap: 10px;
             }
             
             .setting-label {
                 font-weight: bold;
-                min-width: 200px;
+                font-size: 0.9rem;
+                color: #666;
             }
             
             .setting-input {
@@ -545,10 +547,17 @@ async def dashboard():
                 /* outline: 2px solid var(--secondary-color); */
             }
             
+            .setting-group > div {
+                display: flex;
+                flex-direction: column;
+                gap: 5px;
+                width: 100%;
+            }
+            
             .setting-help {
                 font-size: 0.9rem;
                 color: #666;
-                margin-left: 200px;
+                margin-top: 5px;
             }
             
             .disabled-setting {
@@ -642,6 +651,10 @@ async def dashboard():
                     min-width: auto;
                 }
                 
+                .setting-help {
+                    margin-top: 5px;
+                }
+                
                 .pagination {
                     flex-wrap: wrap;
                     gap: 5px;
@@ -672,7 +685,6 @@ async def dashboard():
                 </div>
                 <button class="button" onclick="capturePhoto()">capture photo</button>
                 <button class="button" onclick="openSettings()">settings</button>
-                <button class="button" onclick="clearScreen()">clear screen</button>
             </div>
             </div>
             
@@ -703,75 +715,116 @@ async def dashboard():
                 <div class="settings-section">
                     <h3>camera settings</h3>
                     <div class="setting-group disabled-setting">
-                        <span class="setting-label">Resolution Width:</span>
-                        <input type="number" id="resolution-width" class="setting-input" min="100" max="4000" disabled>
+                        <div>
+                            <span class="setting-label">resolution width</span>
+                            <input type="number" id="resolution-width" class="setting-input" min="100" max="4000" disabled>
+                        </div>
                     </div>
                     <div class="setting-group disabled-setting">
-                        <span class="setting-label">Resolution Height:</span>
-                        <input type="number" id="resolution-height" class="setting-input" min="100" max="4000" disabled>
+                        <div>
+                            <span class="setting-label">resolution height</span>
+                            <input type="number" id="resolution-height" class="setting-input" min="100" max="4000" disabled>
+                        </div>
                     </div>
                     <div class="setting-group">
-                        <span class="setting-label">Exposure Value:</span>
-                        <input type="number" id="exposure-value" class="setting-input" step="0.25" min="-2" max="2">
+                        <div>
+                            <span class="setting-label">exposure value</span>
+                            <input type="number" id="exposure-value" class="setting-input" step="0.25" min="-2" max="2">
+                        </div>
                     </div>
                     <div class="setting-group">
-                        <span class="setting-label">Sharpness:</span>
-                        <input type="number" id="sharpness" class="setting-input" min="0" max="10">
+                        <div>
+                            <span class="setting-label">sharpness</span>
+                            <input type="number" id="sharpness" class="setting-input" min="0" max="10">
+                        </div>
                     </div>
                     <div class="setting-group">
-                        <span class="setting-label">Autofocus Mode:</span>
-                        <select id="autofocus-mode" class="setting-input">
-                            <option value="0">Manual</option>
-                            <option value="1">Auto</option>
-                            <option value="2">Continuous</option>
-                        </select>
+                        <div>
+                            <span class="setting-label">autofocus mode</span>
+                            <select id="autofocus-mode" class="setting-input">
+                                <option value="0">Manual</option>
+                                <option value="1">Auto</option>
+                                <option value="2">Continuous</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
                 
                 <div class="settings-section">
                     <h3>processing settings</h3>
                     <div class="setting-group">
-                        <span class="setting-label">Saturation:</span>
-                        <input type="number" id="saturation" class="setting-input" step="0.1" min="0" max="2">
+                        <div>
+                            <span class="setting-label">saturation</span>
+                            <input type="number" id="saturation" class="setting-input" step="0.1" min="0" max="2">
+                        </div>
                         <div class="setting-help">Blends between muted and saturated 6-color palettes; recommended 0.55–0.70 for natural tones.</div>
                     </div>
                     <div class="setting-group">
-                        <span class="setting-label">Brightness Factor:</span>
-                        <input type="number" id="brightness-factor" class="setting-input" step="0.1" min="0.1" max="3">
+                        <div>
+                            <span class="setting-label">brightness factor</span>
+                            <input type="number" id="brightness-factor" class="setting-input" step="0.1" min="0.1" max="3">
+                        </div>
                         <div class="setting-help">Multiplies image brightness before dithering; recommended 1.0–1.1.</div>
                     </div>
                     <div class="setting-group">
-                        <span class="setting-label">Color Factor:</span>
-                        <input type="number" id="color-factor" class="setting-input" step="0.1" min="0.1" max="3">
+                        <div>
+                            <span class="setting-label">color factor</span>
+                            <input type="number" id="color-factor" class="setting-input" step="0.1" min="0.1" max="3">
+                        </div>
                         <div class="setting-help">Boosts color intensity before dithering; recommended 1.1–1.3.</div>
                     </div>
                     <div class="setting-group">
-                        <span class="setting-label">dithering method:</span>
-                        <select id="dithering-method" class="setting-input">
-                            <option value="floyd_steinberg">floyd steinberg</option>
-                            <option value="ordered">ordered (bayer)</option>
-                        </select>
+                        <div>
+                            <span class="setting-label">dithering method</span>
+                            <select id="dithering-method" class="setting-input">
+                                <option value="floyd_steinberg">floyd steinberg</option>
+                                <option value="ordered">ordered (bayer)</option>
+                            </select>
+                        </div>
                         <div class="setting-help">Floyd–Steinberg is the default; ordered is still experimental</div>
                     </div>
                     <div class="setting-group" id="bayer-settings">
-                        <span class="setting-label">bayer matrix size:</span>
-                        <select id="bayer-size" class="setting-input">
-                            <option value="2">2x2</option>
-                            <option value="4">4x4</option>
-                            <option value="8">8x8</option>
-                        </select>
+                        <div>
+                            <span class="setting-label">bayer matrix size</span>
+                            <select id="bayer-size" class="setting-input">
+                                <option value="2">2x2</option>
+                                <option value="4">4x4</option>
+                                <option value="8">8x8</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="setting-group" id="threshold-settings">
-                        <span class="setting-label">threshold scale:</span>
-                        <input type="number" id="threshold-scale" class="setting-input" min="0.1" max="2.0" step="0.1">
+                        <div>
+                            <span class="setting-label">threshold scale</span>
+                            <input type="number" id="threshold-scale" class="setting-input" min="0.1" max="2.0" step="0.1">
+                        </div>
                     </div>
                 </div>
                 
                 <div class="settings-section">
                     <h3>system settings</h3>
                     <div class="setting-group">
-                        <span class="setting-label">Auto Refresh Interval (seconds):</span>
-                        <input type="number" id="auto-refresh-interval" class="setting-input" min="5" max="300">
+                        <div>
+                            <span class="setting-label">auto refresh interval (seconds)</span>
+                            <input type="number" id="auto-refresh-interval" class="setting-input" min="5" max="300">
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <div>
+                            <span class="setting-label">auto timeout enabled</span>
+                            <select id="auto-timeout-enabled" class="setting-input">
+                                <option value="true">enabled</option>
+                                <option value="false">disabled</option>
+                            </select>
+                        </div>
+                        <div class="setting-help">⚠️ Automatically shuts down the entire Raspberry Pi after inactivity to save battery. You'll need to manually power on the device to use it again.</div>
+                    </div>
+                    <div class="setting-group">
+                        <div>
+                            <span class="setting-label">auto timeout duration (minutes)</span>
+                            <input type="number" id="auto-timeout-minutes" class="setting-input" min="1" max="60">
+                        </div>
+                        <div class="setting-help">Time of inactivity before system shuts down automatically</div>
                     </div>
 
                 </div>
@@ -789,8 +842,18 @@ async def dashboard():
             let currentPage = 1;
             const photosPerPage = 12;  // Show 12 photos per page
             
+            // Function to notify backend of user activity
+            async function notifyUserActivity() {
+                try {
+                    await fetch('/api/timeout/reset', { method: 'POST' });
+                } catch (error) {
+                    console.log('Could not notify user activity:', error);
+                }
+            }
+            
             async function loadPhotos(page = 1) {
                 try {
+                    notifyUserActivity(); // Track gallery interaction
                     const response = await fetch(`/api/photos?page=${page}&limit=${photosPerPage}`);
                     const data = await response.json();
                     photos = data.photos;
@@ -949,6 +1012,7 @@ async def dashboard():
             
             function changePage(page) {
                 if (page >= 1 && page <= pagination.total_pages && page !== currentPage) {
+                    notifyUserActivity(); // Track pagination interaction
                     loadPhotos(page);
                 }
             }
@@ -1024,6 +1088,7 @@ async def dashboard():
             }
             
             function viewPhoto(photoId) {
+                notifyUserActivity(); // Track photo viewing
                 const photo = photos.find(p => p.id === photoId);
                 if (photo) {
                     // Show dithered version if available, otherwise show original
@@ -1034,6 +1099,7 @@ async def dashboard():
             
             async function displayPhoto(photoId) {
                 try {
+                    notifyUserActivity(); // Track display interaction
                     const response = await fetch(`/api/display/${photoId}`, {
                         method: 'POST'
                     });
@@ -1053,6 +1119,7 @@ async def dashboard():
             
             async function capturePhoto() {
                 try {
+                    notifyUserActivity(); // Track capture interaction
                     // Find the capture button and show loading indicator
                     const captureBtn = document.querySelector('button[onclick="capturePhoto()"]');
                     if (captureBtn) {
@@ -1112,6 +1179,7 @@ async def dashboard():
             
             async function openSettings() {
                 try {
+                    notifyUserActivity(); // Track settings interaction
                     const response = await fetch('/api/settings');
                     const settings = await response.json();
                     populateSettingsForm(settings);
@@ -1147,6 +1215,8 @@ async def dashboard():
                 
                 // System settings
                 document.getElementById('auto-refresh-interval').value = settings.system.auto_refresh_interval;
+                document.getElementById('auto-timeout-enabled').value = settings.system.auto_timeout_enabled ? 'true' : 'false';
+                document.getElementById('auto-timeout-minutes').value = settings.system.auto_timeout_minutes || 10;
             }
             
             async function saveSettings() {
@@ -1170,7 +1240,9 @@ async def dashboard():
                             threshold_scale: parseFloat(document.getElementById('threshold-scale').value)
                         },
                         system: {
-                                            auto_refresh_interval: parseInt(document.getElementById('auto-refresh-interval').value)
+                            auto_refresh_interval: parseInt(document.getElementById('auto-refresh-interval').value),
+                            auto_timeout_enabled: document.getElementById('auto-timeout-enabled').value === 'true',
+                            auto_timeout_minutes: parseInt(document.getElementById('auto-timeout-minutes').value)
                         }
                     };
                     
@@ -1215,7 +1287,9 @@ async def dashboard():
                                 threshold_scale: 1.0
                             },
                             system: {
-                                auto_refresh_interval: 30
+                                auto_refresh_interval: 30,
+                                auto_timeout_enabled: true,
+                                auto_timeout_minutes: 10
                             }
                         };
                         
@@ -1275,6 +1349,7 @@ async def dashboard():
             }
             
             function refreshGallery() {
+                notifyUserActivity(); // Track refresh interaction
                 loadPhotos(currentPage);
             }
             
