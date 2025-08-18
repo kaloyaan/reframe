@@ -6,3 +6,5 @@ DASHBOARD_PLAN.md
 API_METHODS.md
 camera_api_example.py
 README.md
+boot_time_analyzer.py
+optimize_hybrid_mode.py

@@ -1,7 +1,8 @@
 [Unit]
 Description=Reframe Camera Service
-After=network.target
-Wants=network.target
+# Removed network dependency for fast boot - camera works without network
+After=local-fs.target
+Before=network.target
 
 [Service]
 Type=simple
@@ -20,4 +21,4 @@ StandardError=journal
 SupplementaryGroups=video i2c spi gpio
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=basic.target

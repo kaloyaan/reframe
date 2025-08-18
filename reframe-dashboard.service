@@ -1,6 +1,7 @@
 [Unit]
 Description=Reframe Dashboard Service
-After=network.target reframe.service
+# Wait for camera to be ready AND network to be available for external WiFi debugging
+After=reframe.service network.target
 Wants=network.target
 Requires=reframe.service
 

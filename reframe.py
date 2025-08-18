@@ -261,7 +261,7 @@ class CameraManager:
     def capture_photo(self, file_path):
         """Capture a photo and save it to the specified file path."""
         self.update_activity_time()
-        sleep(1)  # Allow autofocus to complete
+        sleep(0.3)  # Allow autofocus to complete
         self.picam2.capture_file(file_path)  # Capture the photo
         logging.info(f"Photo saved to {file_path}")
 
