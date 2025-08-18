@@ -838,7 +838,11 @@ class CameraSystem:
             self.timeout_thread = threading.Thread(target=self._timeout_monitor_loop, daemon=True)
             self.timeout_thread.start()
             self._timeout_started = True
-            logging.info(f"Auto-timeout monitor started: {self.camera_manager.get_timeout_minutes()} minutes")
+            timeout_minutes = self.camera_manager.get_timeout_minutes()
+            current_time = time.time()
+            last_activity = self.camera_manager.last_activity_time
+            elapsed = current_time - last_activity
+            logging.info(f"Auto-timeout monitor started: {timeout_minutes} minutes timeout, last activity was {elapsed:.1f}s ago")
     
     def start_timeout_monitor_deferred(self):
         """Start the timeout monitor after first photo for faster startup."""
@@ -854,6 +858,9 @@ class CameraSystem:
     
     def _timeout_monitor_loop(self):
         """Background loop that checks for timeout and shuts down system."""
+        # Wait a bit before starting to check for timeout to avoid false triggers on startup
+        time.sleep(60)  # Wait 1 minute before first timeout check
+        
         while self.timeout_running:
             try:
                 if self.camera_manager.is_timeout_exceeded():
@@ -1172,6 +1179,8 @@ def main():
                 logging.info("🖥️  Startup photo displayed on screen")
             logging.info("🏁 FAST SYSTEM READY")
             
+            # Ensure activity time is updated before starting timeout monitor
+            camera_system.update_activity()
             camera_system.start_timeout_monitor_deferred()
         else:
             logging.warning("❌ Failed to capture startup photo: %s", result.get("message", "unknown error"))
