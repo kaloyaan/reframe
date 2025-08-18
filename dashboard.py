@@ -1371,9 +1371,31 @@ async def dashboard():
             async function downloadAllPhotos() {
                 try {
                     notifyUserActivity(); // Track download interaction
+                    
+                    // Find the download button and show loading state
+                    const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
+                    if (downloadBtn) {
+                        const originalText = downloadBtn.textContent;
+                        downloadBtn.textContent = 'preparing download...';
+                        downloadBtn.disabled = true;
+                        downloadBtn.style.opacity = '0.7';
+                    }
+                    
                     const response = await fetch('/api/photos/download-all');
                     if (response.ok) {
+                        // Update button to show download progress
+                        if (downloadBtn) {
+                            downloadBtn.textContent = 'downloading...';
+                        }
+                        
                         const blob = await response.blob();
+                        
+                        // Update button to show completion
+                        if (downloadBtn) {
+                            downloadBtn.textContent = 'download complete!';
+                            downloadBtn.style.opacity = '1';
+                        }
+                        
                         const url = window.URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
@@ -1382,14 +1404,38 @@ async def dashboard():
                         a.click();
                         window.URL.revokeObjectURL(url);
                         document.body.removeChild(a);
-                        alert('Download started!');
+                        
+                        // Reset button after a short delay
+                        setTimeout(() => {
+                            if (downloadBtn) {
+                                downloadBtn.textContent = originalText;
+                                downloadBtn.disabled = false;
+                                downloadBtn.style.opacity = '1';
+                            }
+                        }, 2000);
+                        
                     } else {
                         const error = await response.json();
                         alert(`Error: ${error.detail}`);
+                        
+                        // Reset button on error
+                        if (downloadBtn) {
+                            downloadBtn.textContent = originalText;
+                            downloadBtn.disabled = false;
+                            downloadBtn.style.opacity = '1';
+                        }
                     }
                 } catch (error) {
                     console.error('Error downloading photos:', error);
                     alert('Error downloading photos');
+                    
+                    // Reset button on error
+                    const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
+                    if (downloadBtn) {
+                        downloadBtn.textContent = 'download all photos';
+                        downloadBtn.disabled = false;
+                        downloadBtn.style.opacity = '1';
+                    }
                 }
             }
             
@@ -1693,46 +1739,26 @@ async def get_system_status():
 @app.get("/api/battery")
 async def get_battery_level():
     """Get battery level from PiSugar."""
-    import socket
     import subprocess
     
     try:
-        # Try Unix Domain Socket first (most reliable)
-        try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.connect('/tmp/pisugar-server.sock')
-            sock.send(b'get battery\n')
-            response = sock.recv(1024).decode('utf-8').strip()
-            sock.close()
-            
+        # Use TCP method (working reliably)
+        result = subprocess.run(
+            ['nc', '-q', '0', '127.0.0.1', '8423'],
+            input='get battery\n',
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            response = result.stdout.strip()
             if response.startswith('battery:'):
                 # Handle decimal values and leading spaces
                 battery_str = response.split(':')[1].strip()
                 battery_level = int(float(battery_str))  # Convert decimal to int
-                return {"battery_level": battery_level, "source": "uds"}
-        except Exception as e:
-            print(f"UDS failed: {e}")
+                return {"battery_level": battery_level, "source": "tcp"}
         
-        # Fallback to TCP
-        try:
-            result = subprocess.run(
-                ['nc', '-q', '0', '127.0.0.1', '8423'],
-                input='get battery\n',
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                response = result.stdout.strip()
-                if response.startswith('battery:'):
-                    # Handle decimal values and leading spaces
-                    battery_str = response.split(':')[1].strip()
-                    battery_level = int(float(battery_str))  # Convert decimal to int
-                    return {"battery_level": battery_level, "source": "tcp"}
-        except Exception as e:
-            print(f"TCP failed: {e}")
-        
-        # If both fail, return unknown
+        # If TCP fails, return unknown
         return {"battery_level": None, "source": "unknown", "error": "Could not connect to PiSugar"}
         
     except Exception as e:
