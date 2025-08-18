@@ -846,7 +846,10 @@ async def dashboard():
                 </div>
                 
                 <div class="settings-actions" style="margin-top: 20px; border-top: 1px solid var(--secondary-color); padding-top: 20px;">
-                    <button class="button" onclick="downloadAllPhotos()" style="margin-right: 20px;">download all photos</button>
+                    <div id="download-controls">
+                        <button class="button" onclick="downloadAllPhotos()" style="margin-right: 20px;">download all photos</button>
+                        <button class="button" onclick="abortDownload()" id="abort-btn" style="background: #d32f2f; display: none;">abort download</button>
+                    </div>
                     <button class="button" onclick="deleteAllPhotos()" style="background: #d32f2f;">delete all photos</button>
                 </div>
             </div>
@@ -1375,11 +1378,17 @@ async def dashboard():
                     
                     // Find the download button and show loading state
                     const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
+                    const abortBtn = document.getElementById('abort-btn');
                     if (downloadBtn) {
                         const originalText = downloadBtn.textContent;
                         downloadBtn.textContent = 'starting download...';
                         downloadBtn.disabled = true;
                         downloadBtn.style.opacity = '0.7';
+                    }
+                    
+                    // Show abort button
+                    if (abortBtn) {
+                        abortBtn.style.display = 'inline-block';
                     }
                     
                     // Start the download process
@@ -1416,6 +1425,11 @@ async def dashboard():
                                         downloadBtn.textContent = 'download ready!';
                                         clearInterval(progressInterval);
                                         
+                                        // Hide abort button
+                                        if (abortBtn) {
+                                            abortBtn.style.display = 'none';
+                                        }
+                                        
                                         // Download the file
                                         const resultResponse = await fetch('/api/photos/download-all/result');
                                         if (resultResponse.ok) {
@@ -1440,6 +1454,20 @@ async def dashboard():
                                         } else {
                                             throw new Error('Failed to download file');
                                         }
+                                    } else if (progress.status === 'aborted') {
+                                        clearInterval(progressInterval);
+                                        downloadBtn.textContent = 'download aborted';
+                                        setTimeout(() => {
+                                            if (downloadBtn) {
+                                                downloadBtn.textContent = originalText;
+                                                downloadBtn.disabled = false;
+                                                downloadBtn.style.opacity = '1';
+                                            }
+                                            if (abortBtn) {
+                                                abortBtn.style.display = 'none';
+                                            }
+                                        }, 2000);
+                                        return;
                                     } else if (progress.status === 'error') {
                                         throw new Error(progress.message);
                                     }
@@ -1465,11 +1493,36 @@ async def dashboard():
                     
                     // Reset button on error
                     const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
+                    const abortBtn = document.getElementById('abort-btn');
                     if (downloadBtn) {
                         downloadBtn.textContent = 'download all photos';
                         downloadBtn.disabled = false;
                         downloadBtn.style.opacity = '1';
                     }
+                    if (abortBtn) {
+                        abortBtn.style.display = 'none';
+                    }
+                }
+            }
+            
+            async function abortDownload() {
+                try {
+                    const response = await fetch('/api/photos/download-all/abort', {
+                        method: 'POST'
+                    });
+                    
+                    if (response.ok) {
+                        const abortBtn = document.getElementById('abort-btn');
+                        if (abortBtn) {
+                            abortBtn.textContent = 'aborting...';
+                            abortBtn.disabled = true;
+                        }
+                    } else {
+                        alert('Failed to abort download');
+                    }
+                } catch (error) {
+                    console.error('Error aborting download:', error);
+                    alert('Error aborting download');
                 }
             }
             
@@ -1862,6 +1915,7 @@ async def reprocess_single_photo(photo_id: str):
 
 # Global variable to track download progress
 download_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
+download_abort = False
 
 @app.post("/api/photos/download-all/start")
 async def start_download_all(background_tasks: BackgroundTasks):
@@ -1876,6 +1930,8 @@ async def start_download_all(background_tasks: BackgroundTasks):
             raise HTTPException(status_code=404, detail="No photos found")
         
         # Initialize progress
+        global download_abort
+        download_abort = False
         download_progress = {
             "status": "preparing",
             "processed": 0,
@@ -1897,6 +1953,19 @@ async def get_download_progress():
     """Get current download progress."""
     global download_progress
     return download_progress
+
+@app.post("/api/photos/download-all/abort")
+async def abort_download():
+    """Abort the current download process."""
+    global download_abort, download_progress
+    download_abort = True
+    download_progress = {
+        "status": "aborted",
+        "processed": download_progress.get("processed", 0),
+        "total": download_progress.get("total", 0),
+        "message": "Download aborted by user"
+    }
+    return {"status": "aborted", "message": "Download aborted"}
 
 @app.get("/api/photos/download-all/result")
 async def get_download_result():
@@ -1931,7 +2000,7 @@ async def get_download_result():
 
 async def create_zip_background(all_photos):
     """Background task to create ZIP file."""
-    global download_progress
+    global download_progress, download_abort
     import tempfile
     
     try:
@@ -1948,6 +2017,12 @@ async def create_zip_background(all_photos):
             processed = 0
             
             for photo in all_photos:
+                # Check for abort
+                if download_abort:
+                    download_progress["status"] = "aborted"
+                    download_progress["message"] = "Download aborted by user"
+                    return
+                
                 try:
                     # Add original photo
                     if photo.get("original_path"):
@@ -1978,6 +2053,12 @@ async def create_zip_background(all_photos):
                     processed += 1
                     download_progress["processed"] = processed
                     continue
+        
+        # Check for abort before marking as completed
+        if download_abort:
+            download_progress["status"] = "aborted"
+            download_progress["message"] = "Download aborted by user"
+            return
         
         # Mark as completed
         download_progress["status"] = "completed"
