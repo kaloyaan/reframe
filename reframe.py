@@ -1,36 +1,68 @@
 #!/usr/bin/env python3
 
+# OPTIMIZATION: Time imports to identify bottlenecks
+import time as _time_module
+_import_start = _time_module.time()
+
 import os
 import sys
 import json
 import subprocess
 import logging
+_basic_imports_time = _time_module.time() - _import_start
+
+# Time-sensitive imports
+_heavy_start = _time_module.time()
 from time import sleep
+print(f"⏱️  time module: {(_time_module.time() - _heavy_start)*1000:.1f}ms")
+
+_pil_start = _time_module.time()
 from PIL import Image, ImageEnhance
+print(f"⏱️  PIL import: {(_time_module.time() - _pil_start)*1000:.1f}ms")
+
+_picamera_start = _time_module.time()
 from picamera2 import Picamera2
+print(f"⏱️  picamera2 import: {(_time_module.time() - _picamera_start)*1000:.1f}ms")
+
+_numpy_start = _time_module.time()
 import numpy as np
+print(f"⏱️  numpy import: {(_time_module.time() - _numpy_start)*1000:.1f}ms")
+
+_smbus_start = _time_module.time()
 import smbus2
+print(f"⏱️  smbus2 import: {(_time_module.time() - _smbus_start)*1000:.1f}ms")
+
 from typing import Optional, Dict, Any
 
 # Optional API server imports (only used when running as service)
+_fastapi_start = _time_module.time()
 try:
     from fastapi import FastAPI, HTTPException, Request
     import uvicorn
     _API_AVAILABLE = True
+    print(f"⏱️  FastAPI/uvicorn import: {(_time_module.time() - _fastapi_start)*1000:.1f}ms")
 except Exception:
     _API_AVAILABLE = False
     FastAPI = None  # type: ignore
     HTTPException = None  # type: ignore
     Request = None  # type: ignore
     uvicorn = None  # type: ignore
+    print(f"⏱️  FastAPI/uvicorn import (failed): {(_time_module.time() - _fastapi_start)*1000:.1f}ms")
 
+_threading_start = _time_module.time()
 import threading
 import time
+print(f"⏱️  threading/time import: {(_time_module.time() - _threading_start)*1000:.1f}ms")
 
+_epd_start = _time_module.time()
 libdir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'lib')
 if os.path.exists(libdir):
     sys.path.append(libdir)
 from waveshare_epd import epd4in0e
+print(f"⏱️  waveshare_epd import: {(_time_module.time() - _epd_start)*1000:.1f}ms")
+
+_total_import_time = _time_module.time() - _import_start
+print(f"🔥 TOTAL IMPORT TIME: {_total_import_time*1000:.1f}ms ({_total_import_time:.2f}s)")
 
 # Logging setup
 logging.basicConfig(level=logging.DEBUG)
