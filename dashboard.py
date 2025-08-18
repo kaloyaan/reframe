@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+import aiofiles
 from fastapi.responses import FileResponse, HTMLResponse
 import httpx
 
@@ -1376,83 +1377,91 @@ async def dashboard():
                     const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
                     if (downloadBtn) {
                         const originalText = downloadBtn.textContent;
-                        downloadBtn.textContent = 'preparing download...';
+                        downloadBtn.textContent = 'starting download...';
                         downloadBtn.disabled = true;
                         downloadBtn.style.opacity = '0.7';
                     }
                     
-                    // Add a timeout to prevent indefinite waiting
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
-                    
-                    const response = await fetch('/api/photos/download-all', {
-                        signal: controller.signal
+                    // Start the download process
+                    const startResponse = await fetch('/api/photos/download-all/start', {
+                        method: 'POST'
                     });
                     
-                    clearTimeout(timeoutId);
-                    
-                    if (response.ok) {
-                        // Update button to show download progress
-                        if (downloadBtn) {
-                            downloadBtn.textContent = 'creating zip file...';
-                        }
-                        
-                        // Show progress with dots animation
-                        let dots = 0;
-                        const progressInterval = setInterval(() => {
-                            if (downloadBtn) {
-                                dots = (dots + 1) % 4;
-                                const dotsStr = '.'.repeat(dots);
-                                downloadBtn.textContent = `creating zip file${dotsStr}`;
-                            }
-                        }, 500);
-                        
-                        const blob = await response.blob();
-                        clearInterval(progressInterval);
-                        
-                        // Update button to show completion
-                        if (downloadBtn) {
-                            downloadBtn.textContent = 'download complete!';
-                            downloadBtn.style.opacity = '1';
-                        }
-                        
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `reframe-photos-${new Date().toISOString().split('T')[0]}.zip`;
-                        document.body.appendChild(a);
-                        a.click();
-                        window.URL.revokeObjectURL(url);
-                        document.body.removeChild(a);
-                        
-                        // Reset button after a short delay
-                        setTimeout(() => {
-                            if (downloadBtn) {
-                                downloadBtn.textContent = originalText;
-                                downloadBtn.disabled = false;
-                                downloadBtn.style.opacity = '1';
-                            }
-                        }, 2000);
-                        
-                    } else {
-                        const error = await response.json();
-                        alert(`Error: ${error.detail}`);
-                        
-                        // Reset button on error
-                        if (downloadBtn) {
-                            downloadBtn.textContent = originalText;
-                            downloadBtn.disabled = false;
-                            downloadBtn.style.opacity = '1';
-                        }
+                    if (!startResponse.ok) {
+                        const error = await startResponse.json();
+                        throw new Error(error.detail || 'Failed to start download');
                     }
+                    
+                    const startData = await startResponse.json();
+                    const totalPhotos = startData.total_photos;
+                    
+                    // Poll for progress
+                    let progressInterval;
+                    let attempts = 0;
+                    const maxAttempts = 600; // 5 minutes max
+                    
+                    progressInterval = setInterval(async () => {
+                        attempts++;
+                        
+                        try {
+                            const progressResponse = await fetch('/api/photos/download-all/progress');
+                            if (progressResponse.ok) {
+                                const progress = await progressResponse.json();
+                                
+                                if (downloadBtn) {
+                                    if (progress.status === 'creating') {
+                                        const percent = Math.round((progress.processed / progress.total) * 100);
+                                        downloadBtn.textContent = `${progress.message} (${percent}%)`;
+                                    } else if (progress.status === 'completed') {
+                                        downloadBtn.textContent = 'download ready!';
+                                        clearInterval(progressInterval);
+                                        
+                                        // Download the file
+                                        const resultResponse = await fetch('/api/photos/download-all/result');
+                                        if (resultResponse.ok) {
+                                            const blob = await resultResponse.blob();
+                                            const url = window.URL.createObjectURL(blob);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = `reframe-photos-${new Date().toISOString().split('T')[0]}.zip`;
+                                            document.body.appendChild(a);
+                                            a.click();
+                                            window.URL.revokeObjectURL(url);
+                                            document.body.removeChild(a);
+                                            
+                                            downloadBtn.textContent = 'download complete!';
+                                            setTimeout(() => {
+                                                if (downloadBtn) {
+                                                    downloadBtn.textContent = originalText;
+                                                    downloadBtn.disabled = false;
+                                                    downloadBtn.style.opacity = '1';
+                                                }
+                                            }, 2000);
+                                        } else {
+                                            throw new Error('Failed to download file');
+                                        }
+                                    } else if (progress.status === 'error') {
+                                        throw new Error(progress.message);
+                                    }
+                                }
+                            } else {
+                                throw new Error('Failed to get progress');
+                            }
+                        } catch (error) {
+                            clearInterval(progressInterval);
+                            throw error;
+                        }
+                        
+                        // Timeout after max attempts
+                        if (attempts >= maxAttempts) {
+                            clearInterval(progressInterval);
+                            throw new Error('Download timed out after 5 minutes');
+                        }
+                    }, 1000); // Check progress every second
+                    
                 } catch (error) {
                     console.error('Error downloading photos:', error);
-                    
-                    if (error.name === 'AbortError') {
-                        alert('Download timed out after 5 minutes. Please try again.');
-                    } else {
-                        alert('Error downloading photos');
-                    }
+                    alert(`Error: ${error.message}`);
                     
                     // Reset button on error
                     const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
@@ -1600,6 +1609,7 @@ async def download_all_photos():
     from fastapi.responses import StreamingResponse
     import io
     import asyncio
+    import aiofiles
     
     try:
         # Get all photos from hardware service (these have absolute paths)
@@ -1608,53 +1618,76 @@ async def download_all_photos():
         if not all_photos:
             raise HTTPException(status_code=404, detail="No photos found")
         
-        # Create ZIP file in memory
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            total_photos = len(all_photos)
-            processed = 0
+        # Create temporary file for better performance
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            temp_path = temp_file.name
+        
+        # Create ZIP file with streaming
+        async def create_zip_stream():
+            with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zip_file:
+                total_photos = len(all_photos)
+                processed = 0
+                
+                for photo in all_photos:
+                    try:
+                        # Add original photo - use the absolute path from hardware service
+                        if photo.get("original_path"):
+                            original_file_path = photo["original_path"]  # This is already an absolute path
+                            if os.path.exists(original_file_path):
+                                # Get just the filename for the ZIP
+                                from os.path import basename
+                                filename = basename(original_file_path)
+                                zip_file.write(original_file_path, f"original/{filename}")
+                        
+                        # Add dithered photo if available - use the absolute path from hardware service
+                        if photo.get("dithered_path"):
+                            dithered_file_path = photo["dithered_path"]  # This is already an absolute path
+                            if os.path.exists(dithered_file_path):
+                                # Get just the filename for the ZIP
+                                from os.path import basename
+                                filename = basename(dithered_file_path)
+                                zip_file.write(dithered_file_path, f"dithered/{filename}")
+                        
+                        processed += 1
+                        
+                        # Yield control more frequently for better responsiveness
+                        if processed % 2 == 0:
+                            await asyncio.sleep(0.005)  # Even smaller delay
+                                
+                    except Exception as e:
+                        print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
+                        processed += 1
+                        continue
+        
+        # Create ZIP in background
+        await create_zip_stream()
+        
+        # Stream the file back
+        async def file_stream():
+            async with aiofiles.open(temp_path, 'rb') as f:
+                while chunk := await f.read(8192):  # 8KB chunks
+                    yield chunk
             
-            for photo in all_photos:
-                try:
-                    # Add original photo - use the absolute path from hardware service
-                    if photo.get("original_path"):
-                        original_file_path = photo["original_path"]  # This is already an absolute path
-                        if os.path.exists(original_file_path):
-                            # Get just the filename for the ZIP
-                            from os.path import basename
-                            filename = basename(original_file_path)
-                            zip_file.write(original_file_path, f"original/{filename}")
-                    
-                    # Add dithered photo if available - use the absolute path from hardware service
-                    if photo.get("dithered_path"):
-                        dithered_file_path = photo["dithered_path"]  # This is already an absolute path
-                        if os.path.exists(dithered_file_path):
-                            # Get just the filename for the ZIP
-                            from os.path import basename
-                            filename = basename(dithered_file_path)
-                            zip_file.write(dithered_file_path, f"dithered/{filename}")
-                    
-                    processed += 1
-                    
-                    # Yield control every few photos to prevent blocking
-                    if processed % 5 == 0:
-                        await asyncio.sleep(0.01)  # Small delay to prevent blocking
-                            
-                except Exception as e:
-                    print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
-                    processed += 1
-                    continue
+            # Clean up temp file
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
         
-        zip_buffer.seek(0)
-        
-        # Return ZIP file as streaming response
+        # Return streaming response
         return StreamingResponse(
-            io.BytesIO(zip_buffer.getvalue()),
+            file_stream(),
             media_type="application/zip",
             headers={"Content-Disposition": f"attachment; filename=reframe-photos-{datetime.now().strftime('%Y%m%d')}.zip"}
         )
         
     except Exception as e:
+        # Clean up temp file on error
+        try:
+            if 'temp_path' in locals():
+                os.unlink(temp_path)
+        except:
+            pass
         raise HTTPException(status_code=500, detail=f"Failed to create download: {str(e)}")
 
 @app.get("/api/photos/{photo_id}")
@@ -1827,7 +1860,139 @@ async def reprocess_single_photo(photo_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reprocess photo: {str(e)}")
 
+# Global variable to track download progress
+download_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
 
+@app.post("/api/photos/download-all/start")
+async def start_download_all(background_tasks: BackgroundTasks):
+    """Start the download process and return immediately."""
+    global download_progress
+    
+    try:
+        # Get all photos from hardware service
+        all_photos = await reframe_client.get("/photos")
+        
+        if not all_photos:
+            raise HTTPException(status_code=404, detail="No photos found")
+        
+        # Initialize progress
+        download_progress = {
+            "status": "preparing",
+            "processed": 0,
+            "total": len(all_photos),
+            "message": "Preparing download..."
+        }
+        
+        # Start background task
+        background_tasks.add_task(create_zip_background, all_photos)
+        
+        return {"status": "started", "total_photos": len(all_photos)}
+        
+    except Exception as e:
+        download_progress = {"status": "error", "processed": 0, "total": 0, "message": str(e)}
+        raise HTTPException(status_code=500, detail=f"Failed to start download: {str(e)}")
+
+@app.get("/api/photos/download-all/progress")
+async def get_download_progress():
+    """Get current download progress."""
+    global download_progress
+    return download_progress
+
+@app.get("/api/photos/download-all/result")
+async def get_download_result():
+    """Get the completed ZIP file."""
+    global download_progress
+    
+    if download_progress["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Download not completed yet")
+    
+    zip_path = download_progress.get("zip_path")
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail="ZIP file not found")
+    
+    # Stream the file
+    async def file_stream():
+        async with aiofiles.open(zip_path, 'rb') as f:
+            while chunk := await f.read(8192):  # 8KB chunks
+                yield chunk
+        
+        # Clean up
+        try:
+            os.unlink(zip_path)
+            download_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
+        except:
+            pass
+    
+    return StreamingResponse(
+        file_stream(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=reframe-photos-{datetime.now().strftime('%Y%m%d')}.zip"}
+    )
+
+async def create_zip_background(all_photos):
+    """Background task to create ZIP file."""
+    global download_progress
+    import tempfile
+    
+    try:
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            temp_path = temp_file.name
+        
+        download_progress["status"] = "creating"
+        download_progress["message"] = "Creating ZIP file..."
+        
+        # Create ZIP file
+        with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zip_file:
+            total_photos = len(all_photos)
+            processed = 0
+            
+            for photo in all_photos:
+                try:
+                    # Add original photo
+                    if photo.get("original_path"):
+                        original_file_path = photo["original_path"]
+                        if os.path.exists(original_file_path):
+                            from os.path import basename
+                            filename = basename(original_file_path)
+                            zip_file.write(original_file_path, f"original/{filename}")
+                    
+                    # Add dithered photo
+                    if photo.get("dithered_path"):
+                        dithered_file_path = photo["dithered_path"]
+                        if os.path.exists(dithered_file_path):
+                            from os.path import basename
+                            filename = basename(dithered_file_path)
+                            zip_file.write(dithered_file_path, f"dithered/{filename}")
+                    
+                    processed += 1
+                    download_progress["processed"] = processed
+                    download_progress["message"] = f"Processing photo {processed}/{total_photos}"
+                    
+                    # Small delay for responsiveness
+                    if processed % 2 == 0:
+                        await asyncio.sleep(0.005)
+                        
+                except Exception as e:
+                    print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
+                    processed += 1
+                    download_progress["processed"] = processed
+                    continue
+        
+        # Mark as completed
+        download_progress["status"] = "completed"
+        download_progress["message"] = "ZIP file ready for download"
+        download_progress["zip_path"] = temp_path
+        
+    except Exception as e:
+        download_progress["status"] = "error"
+        download_progress["message"] = f"Error: {str(e)}"
+        # Clean up temp file on error
+        try:
+            if 'temp_path' in locals():
+                os.unlink(temp_path)
+        except:
+            pass
 
 @app.post("/api/photos/delete-all")
 async def delete_all_photos():
