@@ -7,7 +7,7 @@ import subprocess
 import logging
 from time import sleep
 
-# OPTIMIZATION: Lazy import PIL - saves 1.0 seconds on startup!
+# OPTIMIZATION: Lazy import PIL
 Image = None  # type: ignore
 ImageEnhance = None  # type: ignore
 
@@ -24,7 +24,7 @@ import smbus2
 
 from typing import Optional, Dict, Any
 
-# OPTIMIZATION: Lazy import FastAPI - saves 4.3 seconds on startup!
+# OPTIMIZATION: Lazy import FastAPI - saves 4.3 seconds on startup
 _API_AVAILABLE = None  # Will be determined when first imported
 FastAPI = None  # type: ignore
 HTTPException = None  # type: ignore  
@@ -55,10 +55,8 @@ if os.path.exists(libdir):
     sys.path.append(libdir)
 from waveshare_epd import epd4in0e
 
-
-
 # Logging setup - OPTIMIZATION: Reduce logging level to speed up e-ink operations
-logging.basicConfig(level=logging.INFO)  # Was DEBUG - too much logging slows down e-ink display
+logging.basicConfig(level=logging.INFO)  # Was DEBUG
 
 # Constants for file paths
 BASE_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -188,18 +186,6 @@ class CameraManager:
                 "message": f"Photo capture failed: {str(e)}"
             }
 
-    def enable_hdr_hardware(self):
-        """Enable HDR via v4l2-ctl command as a fallback/supplement to Picamera2 controls."""
-        try:
-            # Get the directory where this script is located
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            hdr_script = os.path.join(script_dir, "enable_hdr.sh")
-            
-            # Try to enable HDR on camera subdevices
-            subprocess.run([hdr_script], check=False, capture_output=True)
-            logging.info("HDR hardware script executed")
-        except Exception as e:
-            logging.warning(f"Could not execute HDR script: {e}")
 
     def configure_camera(self):
         """Configure the camera settings."""
@@ -222,8 +208,6 @@ class CameraManager:
             "Sharpness": camera_settings.get("sharpness", 3)
         }
         
-        # Always enable HDR via hardware method for Camera Module 3
-        self.enable_hdr_hardware()
         
         camera_config["controls"] = controls
         
@@ -505,19 +489,8 @@ class ImageProcessor:
             logging.warning(f"Invalid image dimensions: {imwidth}x{imheight}, expected {width}x{height}")
             return None
 
-        # OPTIMIZATION: Fast path for already-processed palette images
-        if image_temp.mode == 'P' and image_temp.getpalette() is not None:
-            try:
-                # Try fast path for correctly formatted images
-                buf_6color = np.frombuffer(image_temp.tobytes('raw'), dtype=np.uint8)
-                # Safety: remap any index 4 -> 0 
-                buf_6color = buf_6color.copy()
-                buf_6color[buf_6color == 4] = 0
-                buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
-                buf = buf.astype(np.uint8).tolist()
-                return buf
-            except Exception as e:
-                pass
+        # Ensure PIL is available for palette operations in this function
+        Image, _ = _lazy_import_pil()
 
         # Map any palette indices or RGB values to the panel's fixed nibble indices.
         # Hardware palette indices expected by the panel (nibbles):
@@ -1202,11 +1175,9 @@ def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
 def main():
     global camera_system
     
-    logging.info("🚀 REFRAME FAST STARTUP: Initializing camera system...")
     camera_system = CameraSystem()
     logging.info("📷 Camera system initialized")
-
-    logging.info("📸 Taking FAST startup photo...")
+    logging.info("📸 Taking startup photo...")
     try:
         with _operation_lock:
             result = camera_system.capture_photo_api(fast_mode=True, ultra_fast_startup=True)
