@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.responses import StreamingResponse
 import aiofiles
 from fastapi.responses import FileResponse, HTMLResponse
 import httpx
@@ -846,7 +847,7 @@ async def dashboard():
                 </div>
                 
                 <div class="settings-actions" style="margin-top: 20px; border-top: 1px solid var(--secondary-color); padding-top: 20px;">
-                    <div id="download-controls" style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px;">
+                    <div id="download-controls" style="align-items: center; margin-bottom: 15px;">
                         <button class="button" onclick="downloadAllPhotos()" style="padding: 12px 20px; min-width: 160px;">download all photos</button>
                         <button class="button" onclick="abortDownload()" id="abort-btn" style="background: #d32f2f; display: none; padding: 12px 20px; min-width: 140px;">abort download</button>
                     </div>
@@ -2027,6 +2028,7 @@ async def create_zip_background(all_photos):
     global download_progress, download_abort
     import tempfile
     import zipfile
+    import asyncio
     
     try:
         # Create temporary file
