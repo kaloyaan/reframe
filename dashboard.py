@@ -1431,29 +1431,43 @@ async def dashboard():
                                             abortBtn.style.display = 'none';
                                         }
                                         
-                                        // Download the file
-                                        const resultResponse = await fetch('/api/photos/download-all/result');
-                                        if (resultResponse.ok) {
-                                            const blob = await resultResponse.blob();
-                                            const url = window.URL.createObjectURL(blob);
-                                            const a = document.createElement('a');
-                                            a.href = url;
-                                            a.download = `reframe-photos-${new Date().toISOString().split('T')[0]}.zip`;
-                                            document.body.appendChild(a);
-                                            a.click();
-                                            window.URL.revokeObjectURL(url);
-                                            document.body.removeChild(a);
+                                        // Download the file with better error handling
+                                        try {
+                                            console.log('Starting file download...');
+                                            const resultResponse = await fetch('/api/photos/download-all/result');
+                                            console.log('Download response status:', resultResponse.status);
                                             
-                                            downloadBtn.textContent = 'download complete!';
-                                            setTimeout(() => {
-                                                if (downloadBtn) {
-                                                    downloadBtn.textContent = originalText;
-                                                    downloadBtn.disabled = false;
-                                                    downloadBtn.style.opacity = '1';
-                                                }
-                                            }, 2000);
-                                        } else {
-                                            throw new Error('Failed to download file');
+                                            if (resultResponse.ok) {
+                                                const blob = await resultResponse.blob();
+                                                console.log('Blob size:', blob.size);
+                                                
+                                                const url = window.URL.createObjectURL(blob);
+                                                const a = document.createElement('a');
+                                                a.href = url;
+                                                a.download = `reframe-photos-${new Date().toISOString().split('T')[0]}.zip`;
+                                                a.style.display = 'none';
+                                                document.body.appendChild(a);
+                                                a.click();
+                                                window.URL.revokeObjectURL(url);
+                                                document.body.removeChild(a);
+                                                
+                                                console.log('Download triggered successfully');
+                                                downloadBtn.textContent = 'download complete!';
+                                                setTimeout(() => {
+                                                    if (downloadBtn) {
+                                                        downloadBtn.textContent = originalText;
+                                                        downloadBtn.disabled = false;
+                                                        downloadBtn.style.opacity = '1';
+                                                    }
+                                                }, 2000);
+                                            } else {
+                                                const errorText = await resultResponse.text();
+                                                console.error('Download failed:', resultResponse.status, errorText);
+                                                throw new Error(`Failed to download file: ${resultResponse.status}`);
+                                            }
+                                        } catch (downloadError) {
+                                            console.error('Download error:', downloadError);
+                                            throw downloadError;
                                         }
                                     } else if (progress.status === 'aborted') {
                                         clearInterval(window.progressInterval);
@@ -1997,25 +2011,40 @@ async def get_download_result():
     """Get the completed ZIP file."""
     global download_progress
     
+    print(f"Download result requested. Status: {download_progress.get('status')}")
+    
     if download_progress["status"] != "completed":
+        print(f"Download not completed. Current status: {download_progress.get('status')}")
         raise HTTPException(status_code=400, detail="Download not completed yet")
     
     zip_path = download_progress.get("zip_path")
+    print(f"ZIP path: {zip_path}")
+    
     if not zip_path or not os.path.exists(zip_path):
+        print(f"ZIP file not found at: {zip_path}")
         raise HTTPException(status_code=404, detail="ZIP file not found")
+    
+    print(f"Starting file stream for: {zip_path}")
     
     # Stream the file
     async def file_stream():
-        async with aiofiles.open(zip_path, 'rb') as f:
-            while chunk := await f.read(8192):  # 8KB chunks
-                yield chunk
-        
-        # Clean up
         try:
-            os.unlink(zip_path)
-            download_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
-        except:
-            pass
+            async with aiofiles.open(zip_path, 'rb') as f:
+                while chunk := await f.read(8192):  # 8KB chunks
+                    yield chunk
+            
+            print("File streaming completed")
+            
+            # Clean up
+            try:
+                os.unlink(zip_path)
+                download_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
+                print("Temporary file cleaned up")
+            except Exception as cleanup_error:
+                print(f"Cleanup error: {cleanup_error}")
+        except Exception as stream_error:
+            print(f"Streaming error: {stream_error}")
+            raise
     
     return StreamingResponse(
         file_stream(),
@@ -2091,6 +2120,7 @@ async def create_zip_background(all_photos):
         download_progress["status"] = "completed"
         download_progress["message"] = "ZIP file ready for download"
         download_progress["zip_path"] = temp_path
+        print(f"ZIP creation completed. File: {temp_path}, Size: {os.path.getsize(temp_path)} bytes")
         
     except Exception as e:
         download_progress["status"] = "error"
