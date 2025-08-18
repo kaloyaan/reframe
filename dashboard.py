@@ -1698,7 +1698,7 @@ async def download_all_photos():
     import io
     
     try:
-        # Get all photos from hardware service
+        # Get all photos from hardware service (these have absolute paths)
         all_photos = await reframe_client.get("/photos")
         
         if not all_photos:
@@ -1709,27 +1709,23 @@ async def download_all_photos():
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for photo in all_photos:
                 try:
-                    # Add original photo
+                    # Add original photo - use the absolute path from hardware service
                     if photo.get("original_path"):
-                        orig_path = photo["original_path"].replace("/photos/", "").replace("/dithered/", "")
-                        if photo.get("original_path", "").startswith("/photos/"):
-                            file_path = os.path.join(PHOTOS_PATH, orig_path)
-                        else:
-                            file_path = photo["original_path"]
-                        
-                        if os.path.exists(file_path):
-                            zip_file.write(file_path, f"original/{orig_path}")
+                        original_file_path = photo["original_path"]  # This is already an absolute path
+                        if os.path.exists(original_file_path):
+                            # Get just the filename for the ZIP
+                            from os.path import basename
+                            filename = basename(original_file_path)
+                            zip_file.write(original_file_path, f"original/{filename}")
                     
-                    # Add dithered photo if available
+                    # Add dithered photo if available - use the absolute path from hardware service
                     if photo.get("dithered_path"):
-                        dith_path = photo["dithered_path"].replace("/photos/", "").replace("/dithered/", "")
-                        if photo.get("dithered_path", "").startswith("/dithered/"):
-                            file_path = os.path.join(DITHERED_PHOTOS_PATH, dith_path)
-                        else:
-                            file_path = photo["dithered_path"]
-                        
-                        if os.path.exists(file_path):
-                            zip_file.write(file_path, f"dithered/{dith_path}")
+                        dithered_file_path = photo["dithered_path"]  # This is already an absolute path
+                        if os.path.exists(dithered_file_path):
+                            # Get just the filename for the ZIP
+                            from os.path import basename
+                            filename = basename(dithered_file_path)
+                            zip_file.write(dithered_file_path, f"dithered/{filename}")
                             
                 except Exception as e:
                     print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
