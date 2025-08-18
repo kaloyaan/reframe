@@ -8,7 +8,6 @@ import logging
 from time import sleep
 
 # OPTIMIZATION: Lazy import PIL - saves 1.0 seconds on startup!
-print("⏱️  PIL: LAZY LOADED (deferred)")
 Image = None  # type: ignore
 ImageEnhance = None  # type: ignore
 
@@ -16,10 +15,7 @@ def _lazy_import_pil():
     """Import PIL only when needed for image processing."""
     global Image, ImageEnhance
     if Image is None:
-        import time
-        _pil_start = time.time()
         from PIL import Image, ImageEnhance
-        print(f"⏱️  PIL LAZY import: {(time.time() - _pil_start)*1000:.1f}ms")
     return Image, ImageEnhance
 
 from picamera2 import Picamera2
@@ -29,8 +25,6 @@ import smbus2
 from typing import Optional, Dict, Any
 
 # OPTIMIZATION: Lazy import FastAPI - saves 4.3 seconds on startup!
-# These will be imported only when API server starts (after first photo)
-print("⏱️  FastAPI/uvicorn: LAZY LOADED (deferred)")
 _API_AVAILABLE = None  # Will be determined when first imported
 FastAPI = None  # type: ignore
 HTTPException = None  # type: ignore  
@@ -41,20 +35,16 @@ def _lazy_import_fastapi():
     """Import FastAPI/uvicorn only when needed."""
     global _API_AVAILABLE, FastAPI, HTTPException, Request, uvicorn
     if _API_AVAILABLE is None:
-        import time
-        _fastapi_start = time.time()
         try:
             from fastapi import FastAPI, HTTPException, Request
             import uvicorn
             _API_AVAILABLE = True
-            print(f"⏱️  FastAPI/uvicorn LAZY import: {(time.time() - _fastapi_start)*1000:.1f}ms")
         except Exception:
             _API_AVAILABLE = False
             FastAPI = None  # type: ignore
             HTTPException = None  # type: ignore
             Request = None  # type: ignore
             uvicorn = None  # type: ignore
-            print(f"⏱️  FastAPI/uvicorn LAZY import (failed): {(time.time() - _fastapi_start)*1000:.1f}ms")
     return _API_AVAILABLE
 
 import threading
@@ -65,7 +55,7 @@ if os.path.exists(libdir):
     sys.path.append(libdir)
 from waveshare_epd import epd4in0e
 
-print(f"🚀 STARTUP OPTIMIZATIONS: FastAPI (~4.3s) + PIL (~1.0s) = ~5.3s saved with lazy imports!")
+
 
 # Logging setup - OPTIMIZATION: Reduce logging level to speed up e-ink operations
 logging.basicConfig(level=logging.INFO)  # Was DEBUG - too much logging slows down e-ink display
@@ -98,23 +88,11 @@ class CameraManager:
     """Manages camera operations, including capturing and processing photos."""
 
     def __init__(self, settings_path="settings.json"):
-        # DETAILED TIMING: Break down CameraManager initialization
-        print(f"🔍 CameraManager: Loading settings...")
-        settings_start = time.time()
         self.settings_path = settings_path
         self.settings = self.load_settings()
-        print(f"🔍   Settings load: {(time.time() - settings_start)*1000:.1f}ms")
-        
-        print(f"🔍 CameraManager: Creating Picamera2...")
-        picam_start = time.time()
         self.picam2 = Picamera2()
         self.last_activity_time = time.time()
-        print(f"🔍   Picamera2 creation: {(time.time() - picam_start)*1000:.1f}ms")
-        
-        print(f"🔍 CameraManager: Configuring camera...")
-        config_start = time.time()
         self.configure_camera()
-        print(f"🔍   Full camera configuration: {(time.time() - config_start)*1000:.1f}ms")
 
     def load_settings(self):
         """Load camera settings from JSON file."""
@@ -518,10 +496,6 @@ class ImageProcessor:
     @staticmethod
     def img2buffer(image, width=400, height=600):
         """Converts an image to a format suitable for the e-ink display."""
-        # OPTIMIZATION: Add timing to identify bottlenecks in display pipeline
-        import time
-        buffer_start = time.time()
-        
         imwidth, imheight = image.size
         if imwidth == width and imheight == height:
             image_temp = image
@@ -541,12 +515,9 @@ class ImageProcessor:
                 buf_6color[buf_6color == 4] = 0
                 buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
                 buf = buf.astype(np.uint8).tolist()
-                
-                buffer_time = time.time() - buffer_start
-                print(f"🔍 img2buffer FAST PATH: {buffer_time*1000:.1f}ms")
                 return buf
             except Exception as e:
-                print(f"🔍 Fast path failed, using full conversion: {e}")
+                pass
 
         # Map any palette indices or RGB values to the panel's fixed nibble indices.
         # Hardware palette indices expected by the panel (nibbles):
@@ -608,9 +579,6 @@ class ImageProcessor:
                 hw_pixels = np.where(hw_pixels == 4, 0, hw_pixels).astype(np.uint8)
             buf = (hw_pixels[0::2].astype(np.uint8) << 4) + hw_pixels[1::2].astype(np.uint8)
             buf = buf.astype(np.uint8).tolist()
-            
-            buffer_time = time.time() - buffer_start
-            print(f"🔍 img2buffer FULL CONVERSION: {buffer_time*1000:.1f}ms")
             return buf
         except Exception as e:
             logging.warning(f"img2buffer: palette mapping fallback due to: {e}")
@@ -624,8 +592,6 @@ class ImageProcessor:
             buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
             buf = buf.astype(np.uint8).tolist()
 
-        buffer_time = time.time() - buffer_start
-        print(f"🔍 img2buffer FALLBACK CONVERSION: {buffer_time*1000:.1f}ms")
         return buf
 
     @staticmethod
@@ -821,20 +787,9 @@ class EInkDisplay:
     def display_image(self, image):
         """Displays the provided image on the e-ink display."""
         self._ensure_initialized()  # Initialize only when first used
-        
-        # OPTIMIZATION: Time the buffer conversion vs hardware display
-        import time
-        
-        buffer_convert_start = time.time()
         buffer = ImageProcessor.img2buffer(image)
-        buffer_convert_time = time.time() - buffer_convert_start
-        print(f"🔍 Buffer conversion: {buffer_convert_time*1000:.1f}ms")
-        
         if buffer:
-            hardware_start = time.time() 
             self.epd.display(buffer)
-            hardware_time = time.time() - hardware_start
-            print(f"🔍 E-ink hardware display: {hardware_time:.2f}s")
 
     def display_photo_by_id(self, photo_id, file_manager, prefer_dithered=True):
         """Display a photo by ID on the e-ink screen."""
@@ -911,35 +866,12 @@ class CameraSystem:
     """Complete camera system that implements dashboard-like functionality."""
     
     def __init__(self, settings_path="settings.json"):
-        # DETAILED TIMING: Break down the 8s launch-to-photo bottleneck
-        overall_start = time.time()
-        
-        # CameraManager initialization
-        cam_start = time.time()
         self.camera_manager = CameraManager(settings_path)
-        cam_time = time.time() - cam_start
-        print(f"🔍 CameraManager init: {cam_time:.2f}s")
-        
-        # FileManager initialization  
-        file_start = time.time()
         self.file_manager = FileManager(SAVE_PATH, PROCESSED_PATH)
-        file_time = time.time() - file_start
-        print(f"🔍 FileManager init: {file_time:.3f}s")
-        
-        # EInkDisplay initialization (lazy)
-        eink_start = time.time()
         self.eink_display = EInkDisplay()
-        eink_time = time.time() - eink_start
-        print(f"🔍 EInkDisplay init: {eink_time:.3f}s")
-        
         self.timeout_thread = None
         self.timeout_running = False
         self._timeout_started = False
-        
-        total_init = time.time() - overall_start
-        print(f"🔍 TOTAL CameraSystem init: {total_init:.2f}s")
-        
-        # OPTIMIZATION: Defer timeout monitor until after first photo for faster startup
         logging.info("Timeout monitor initialization deferred for fast startup")
     
     def start_timeout_monitor(self):
@@ -990,33 +922,14 @@ class CameraSystem:
     def capture_photo_api(self, fast_mode=False, ultra_fast_startup=False):
         """API-style photo capture that returns metadata."""
         try:
-            # DETAILED TIMING: Break down photo capture pipeline
-            pipeline_start = time.time()
-            
-            # Get a new file path
-            path_start = time.time()
             photo_path = self.file_manager.get_new_file_path(SAVE_PATH, "png")
-            print(f"🔍 Get file path: {(time.time() - path_start)*1000:.1f}ms")
             logging.info(f"Capturing photo to: {photo_path}")
             
-            # Capture photo with metadata
-            capture_start = time.time()
             result = self.camera_manager.capture_photo_with_metadata(photo_path, fast_mode=fast_mode)
-            capture_time = time.time() - capture_start
-            print(f"🔍 Photo capture: {capture_time:.2f}s")
-            
-            # TIMING GAP: What happens between capture and processing?
-            gap_start = time.time()
             
             if result["success"]:
                 logging.info(f"Photo captured successfully: {result['photo_id']}")
                 
-                # TIMING GAP: Measure the gap between capture and processing
-                gap_time = time.time() - gap_start
-                print(f"🔍 GAP between capture and processing: {gap_time:.2f}s")
-                
-                # Process the image (with ultra-fast mode for startup)
-                process_start = time.time()
                 processing_settings = self.camera_manager.settings.get("processing", {})
                 dithered_path = os.path.join(PROCESSED_PATH, f"{result['photo_id']}_dithered.png")
                 logging.info(f"Processing to: {dithered_path}")
@@ -1024,34 +937,19 @@ class CameraSystem:
                 process_result = ImageProcessor.process_photo_with_settings(
                     photo_path, dithered_path, processing_settings
                 )
-                process_time = time.time() - process_start
-                print(f"🔍 Image processing: {process_time:.2f}s")
                 
                 if process_result["success"]:
                     result["processed_path"] = dithered_path
                     logging.info(f"Dithered version created: {dithered_path}")
                     
-                    # TIMING GAP: What happens between processing and display?
-                    display_gap_start = time.time()
-                    
-                    # Auto-display if enabled
-                    display_start = time.time()
                     display_settings = self.camera_manager.settings.get("display", {})
                     if display_settings.get("auto_display", True):
-                        # TIMING GAP: Measure the gap before display starts
-                        display_gap_time = time.time() - display_gap_start
-                        print(f"🔍 GAP between processing and display: {display_gap_time:.2f}s")
-                        
                         logging.info("Auto-displaying photo")
                         self.eink_display.display_photo_by_id(result["photo_id"], self.file_manager)
-                        display_time = time.time() - display_start
-                        print(f"🔍 Display photo: {display_time:.2f}s")
                         
                 else:
                     logging.error(f"Processing failed: {process_result.get('error', 'unknown error')}")
                 
-            total_pipeline = time.time() - pipeline_start
-            print(f"🔍 TOTAL photo pipeline: {total_pipeline:.2f}s")
             return result
             
         except Exception as e:
@@ -1304,33 +1202,21 @@ def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
 def main():
     global camera_system
     
-    # FAST STARTUP MODE: Optimized with quality preserved
-    overall_start = time.time()
     logging.info("🚀 REFRAME FAST STARTUP: Initializing camera system...")
-    
-    # Initialize camera system 
-    init_start = time.time()
     camera_system = CameraSystem()
-    init_time = time.time() - init_start
-    logging.info(f"📷 Camera system initialized in {init_time:.2f}s")
+    logging.info("📷 Camera system initialized")
 
-    # Take an initial photo on startup with optimized processing
     logging.info("📸 Taking FAST startup photo...")
-    photo_start = time.time()
     try:
         with _operation_lock:
-            # FAST: Fast autofocus + optimized startup processing (quality preserved)
             result = camera_system.capture_photo_api(fast_mode=True, ultra_fast_startup=True)
-        photo_time = time.time() - photo_start
         
         if result.get("success"):
-            overall_time = time.time() - overall_start
-            logging.info("✅ FAST startup photo captured: %s in %.2fs", result.get("photo_id", "unknown"), photo_time)
+            logging.info("✅ FAST startup photo captured: %s", result.get("photo_id", "unknown"))
             if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True):
                 logging.info("🖥️  Startup photo displayed on screen")
-            logging.info("🏁 FAST SYSTEM READY in %.2fs total", overall_time)
+            logging.info("🏁 FAST SYSTEM READY")
             
-            # OPTIMIZATION: Start timeout monitor after first photo is complete
             camera_system.start_timeout_monitor_deferred()
         else:
             logging.warning("❌ Failed to capture startup photo: %s", result.get("message", "unknown error"))
