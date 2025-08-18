@@ -1381,14 +1381,34 @@ async def dashboard():
                         downloadBtn.style.opacity = '0.7';
                     }
                     
-                    const response = await fetch('/api/photos/download-all');
+                    // Add a timeout to prevent indefinite waiting
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+                    
+                    const response = await fetch('/api/photos/download-all', {
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(timeoutId);
+                    
                     if (response.ok) {
                         // Update button to show download progress
                         if (downloadBtn) {
-                            downloadBtn.textContent = 'downloading...';
+                            downloadBtn.textContent = 'creating zip file...';
                         }
                         
+                        // Show progress with dots animation
+                        let dots = 0;
+                        const progressInterval = setInterval(() => {
+                            if (downloadBtn) {
+                                dots = (dots + 1) % 4;
+                                const dotsStr = '.'.repeat(dots);
+                                downloadBtn.textContent = `creating zip file${dotsStr}`;
+                            }
+                        }, 500);
+                        
                         const blob = await response.blob();
+                        clearInterval(progressInterval);
                         
                         // Update button to show completion
                         if (downloadBtn) {
@@ -1427,7 +1447,12 @@ async def dashboard():
                     }
                 } catch (error) {
                     console.error('Error downloading photos:', error);
-                    alert('Error downloading photos');
+                    
+                    if (error.name === 'AbortError') {
+                        alert('Download timed out after 5 minutes. Please try again.');
+                    } else {
+                        alert('Error downloading photos');
+                    }
                     
                     // Reset button on error
                     const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
@@ -1574,6 +1599,7 @@ async def download_all_photos():
     import tempfile
     from fastapi.responses import StreamingResponse
     import io
+    import asyncio
     
     try:
         # Get all photos from hardware service (these have absolute paths)
@@ -1585,6 +1611,9 @@ async def download_all_photos():
         # Create ZIP file in memory
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            total_photos = len(all_photos)
+            processed = 0
+            
             for photo in all_photos:
                 try:
                     # Add original photo - use the absolute path from hardware service
@@ -1604,9 +1633,16 @@ async def download_all_photos():
                             from os.path import basename
                             filename = basename(dithered_file_path)
                             zip_file.write(dithered_file_path, f"dithered/{filename}")
+                    
+                    processed += 1
+                    
+                    # Yield control every few photos to prevent blocking
+                    if processed % 5 == 0:
+                        await asyncio.sleep(0.01)  # Small delay to prevent blocking
                             
                 except Exception as e:
                     print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
+                    processed += 1
                     continue
         
         zip_buffer.seek(0)
