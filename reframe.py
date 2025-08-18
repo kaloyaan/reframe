@@ -67,8 +67,8 @@ from waveshare_epd import epd4in0e
 
 print(f"🚀 STARTUP OPTIMIZATIONS: FastAPI (~4.3s) + PIL (~1.0s) = ~5.3s saved with lazy imports!")
 
-# Logging setup
-logging.basicConfig(level=logging.DEBUG)
+# Logging setup - OPTIMIZATION: Reduce logging level to speed up e-ink operations
+logging.basicConfig(level=logging.INFO)  # Was DEBUG - too much logging slows down e-ink display
 
 # Constants for file paths
 BASE_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -518,6 +518,10 @@ class ImageProcessor:
     @staticmethod
     def img2buffer(image, width=400, height=600):
         """Converts an image to a format suitable for the e-ink display."""
+        # OPTIMIZATION: Add timing to identify bottlenecks in display pipeline
+        import time
+        buffer_start = time.time()
+        
         imwidth, imheight = image.size
         if imwidth == width and imheight == height:
             image_temp = image
@@ -526,6 +530,23 @@ class ImageProcessor:
         else:
             logging.warning(f"Invalid image dimensions: {imwidth}x{imheight}, expected {width}x{height}")
             return None
+
+        # OPTIMIZATION: Fast path for already-processed palette images
+        if image_temp.mode == 'P' and image_temp.getpalette() is not None:
+            try:
+                # Try fast path for correctly formatted images
+                buf_6color = np.frombuffer(image_temp.tobytes('raw'), dtype=np.uint8)
+                # Safety: remap any index 4 -> 0 
+                buf_6color = buf_6color.copy()
+                buf_6color[buf_6color == 4] = 0
+                buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
+                buf = buf.astype(np.uint8).tolist()
+                
+                buffer_time = time.time() - buffer_start
+                print(f"🔍 img2buffer FAST PATH: {buffer_time*1000:.1f}ms")
+                return buf
+            except Exception as e:
+                print(f"🔍 Fast path failed, using full conversion: {e}")
 
         # Map any palette indices or RGB values to the panel's fixed nibble indices.
         # Hardware palette indices expected by the panel (nibbles):
@@ -587,6 +608,10 @@ class ImageProcessor:
                 hw_pixels = np.where(hw_pixels == 4, 0, hw_pixels).astype(np.uint8)
             buf = (hw_pixels[0::2].astype(np.uint8) << 4) + hw_pixels[1::2].astype(np.uint8)
             buf = buf.astype(np.uint8).tolist()
+            
+            buffer_time = time.time() - buffer_start
+            print(f"🔍 img2buffer FULL CONVERSION: {buffer_time*1000:.1f}ms")
+            return buf
         except Exception as e:
             logging.warning(f"img2buffer: palette mapping fallback due to: {e}")
             # Fallback: direct indices with 4 -> 0 remap
@@ -599,6 +624,8 @@ class ImageProcessor:
             buf = (buf_6color[0::2] << 4) + buf_6color[1::2]
             buf = buf.astype(np.uint8).tolist()
 
+        buffer_time = time.time() - buffer_start
+        print(f"🔍 img2buffer FALLBACK CONVERSION: {buffer_time*1000:.1f}ms")
         return buf
 
     @staticmethod
@@ -794,9 +821,20 @@ class EInkDisplay:
     def display_image(self, image):
         """Displays the provided image on the e-ink display."""
         self._ensure_initialized()  # Initialize only when first used
+        
+        # OPTIMIZATION: Time the buffer conversion vs hardware display
+        import time
+        
+        buffer_convert_start = time.time()
         buffer = ImageProcessor.img2buffer(image)
+        buffer_convert_time = time.time() - buffer_convert_start
+        print(f"🔍 Buffer conversion: {buffer_convert_time*1000:.1f}ms")
+        
         if buffer:
+            hardware_start = time.time() 
             self.epd.display(buffer)
+            hardware_time = time.time() - hardware_start
+            print(f"🔍 E-ink hardware display: {hardware_time:.2f}s")
 
     def display_photo_by_id(self, photo_id, file_manager, prefer_dithered=True):
         """Display a photo by ID on the e-ink screen."""
