@@ -1521,6 +1521,8 @@ async def list_photos(page: int = 1, limit: int = 20):
         },
     }
 
+
+
 @app.get("/api/photos/{photo_id}")
 async def get_photo_info(photo_id: str):
     """Get information about a specific photo from the hardware service."""
@@ -1652,7 +1654,9 @@ async def get_battery_level():
             sock.close()
             
             if response.startswith('battery:'):
-                battery_level = int(response.split(':')[1])
+                # Handle decimal values and leading spaces
+                battery_str = response.split(':')[1].strip()
+                battery_level = int(float(battery_str))  # Convert decimal to int
                 return {"battery_level": battery_level, "source": "uds"}
         except Exception as e:
             print(f"UDS failed: {e}")
@@ -1669,7 +1673,9 @@ async def get_battery_level():
             if result.returncode == 0:
                 response = result.stdout.strip()
                 if response.startswith('battery:'):
-                    battery_level = int(response.split(':')[1])
+                    # Handle decimal values and leading spaces
+                    battery_str = response.split(':')[1].strip()
+                    battery_level = int(float(battery_str))  # Convert decimal to int
                     return {"battery_level": battery_level, "source": "tcp"}
         except Exception as e:
             print(f"TCP failed: {e}")
@@ -1680,6 +1686,24 @@ async def get_battery_level():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get battery level: {str(e)}")
 
+@app.post("/api/timeout/reset")
+async def reset_timeout():
+    """Reset the timeout timer (extend the timeout period)."""
+    try:
+        result = await reframe_client.post("/timeout/reset")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset timeout: {str(e)}")
+
+@app.get("/api/timeout/status")
+async def get_timeout_status():
+    """Get current timeout status and remaining time."""
+    try:
+        result = await reframe_client.get("/timeout/status")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get timeout status: {str(e)}")
+
 @app.post("/api/photos/{photo_id}/reprocess")
 async def reprocess_single_photo(photo_id: str):
     """Reprocess a single photo to create missing dithered version."""
@@ -1689,59 +1713,7 @@ async def reprocess_single_photo(photo_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reprocess photo: {str(e)}")
 
-@app.get("/api/photos/download-all")
-async def download_all_photos():
-    """Download all photos as a ZIP file."""
-    import zipfile
-    import tempfile
-    from fastapi.responses import StreamingResponse
-    import io
-    
-    try:
-        # Get all photos from hardware service (these have absolute paths)
-        all_photos = await reframe_client.get("/photos")
-        
-        if not all_photos:
-            raise HTTPException(status_code=404, detail="No photos found")
-        
-        # Create ZIP file in memory
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            for photo in all_photos:
-                try:
-                    # Add original photo - use the absolute path from hardware service
-                    if photo.get("original_path"):
-                        original_file_path = photo["original_path"]  # This is already an absolute path
-                        if os.path.exists(original_file_path):
-                            # Get just the filename for the ZIP
-                            from os.path import basename
-                            filename = basename(original_file_path)
-                            zip_file.write(original_file_path, f"original/{filename}")
-                    
-                    # Add dithered photo if available - use the absolute path from hardware service
-                    if photo.get("dithered_path"):
-                        dithered_file_path = photo["dithered_path"]  # This is already an absolute path
-                        if os.path.exists(dithered_file_path):
-                            # Get just the filename for the ZIP
-                            from os.path import basename
-                            filename = basename(dithered_file_path)
-                            zip_file.write(dithered_file_path, f"dithered/{filename}")
-                            
-                except Exception as e:
-                    print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
-                    continue
-        
-        zip_buffer.seek(0)
-        
-        # Return ZIP file as streaming response
-        return StreamingResponse(
-            io.BytesIO(zip_buffer.getvalue()),
-            media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename=reframe-photos-{datetime.now().strftime('%Y%m%d')}.zip"}
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create download: {str(e)}")
+
 
 @app.post("/api/photos/delete-all")
 async def delete_all_photos():
