@@ -1005,8 +1005,15 @@ class CameraSystem:
             capture_time = time.time() - capture_start
             print(f"🔍 Photo capture: {capture_time:.2f}s")
             
+            # TIMING GAP: What happens between capture and processing?
+            gap_start = time.time()
+            
             if result["success"]:
                 logging.info(f"Photo captured successfully: {result['photo_id']}")
+                
+                # TIMING GAP: Measure the gap between capture and processing
+                gap_time = time.time() - gap_start
+                print(f"🔍 GAP between capture and processing: {gap_time:.2f}s")
                 
                 # Process the image (with ultra-fast mode for startup)
                 process_start = time.time()
@@ -1024,10 +1031,17 @@ class CameraSystem:
                     result["processed_path"] = dithered_path
                     logging.info(f"Dithered version created: {dithered_path}")
                     
+                    # TIMING GAP: What happens between processing and display?
+                    display_gap_start = time.time()
+                    
                     # Auto-display if enabled
                     display_start = time.time()
                     display_settings = self.camera_manager.settings.get("display", {})
                     if display_settings.get("auto_display", True):
+                        # TIMING GAP: Measure the gap before display starts
+                        display_gap_time = time.time() - display_gap_start
+                        print(f"🔍 GAP between processing and display: {display_gap_time:.2f}s")
+                        
                         logging.info("Auto-displaying photo")
                         self.eink_display.display_photo_by_id(result["photo_id"], self.file_manager)
                         display_time = time.time() - display_start
