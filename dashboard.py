@@ -130,6 +130,13 @@ class ReframeClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def delete(self, path: str):
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.delete(url)
+            resp.raise_for_status()
+            return resp.json()
+
 class PhotoManager:
     """Manages photo operations for the dashboard."""
     
@@ -678,6 +685,9 @@ async def dashboard():
                     <span>system online</span>
                 </div>
                 <div class="status-item">
+                    <span id="battery-level">battery: --%</span>
+                </div>
+                <div class="status-item">
                     <span id="photo-count">loading photos...</span>
                 </div>
                 <div class="status-item">
@@ -832,6 +842,11 @@ async def dashboard():
                 <div class="settings-actions">
                     <button class="save-btn" onclick="saveSettings()">save settings</button>
                     <button class="reset-btn" onclick="resetSettings()">reset to defaults</button>
+                </div>
+                
+                <div class="settings-actions" style="margin-top: 20px; border-top: 1px solid var(--secondary-color); padding-top: 20px;">
+                    <button class="button" onclick="downloadAllPhotos()" style="margin-right: 20px;">download all photos</button>
+                    <button class="button" onclick="deleteAllPhotos()" style="background: #d32f2f;">delete all photos</button>
                 </div>
             </div>
         </div>
@@ -1353,14 +1368,107 @@ async def dashboard():
                 loadPhotos(currentPage);
             }
             
+            async function downloadAllPhotos() {
+                try {
+                    notifyUserActivity(); // Track download interaction
+                    const response = await fetch('/api/photos/download-all');
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `reframe-photos-${new Date().toISOString().split('T')[0]}.zip`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                        alert('Download started!');
+                    } else {
+                        const error = await response.json();
+                        alert(`Error: ${error.detail}`);
+                    }
+                } catch (error) {
+                    console.error('Error downloading photos:', error);
+                    alert('Error downloading photos');
+                }
+            }
+            
+            async function deleteAllPhotos() {
+                const confirmed = confirm('⚠️ This will permanently delete ALL photos from the system. This action cannot be undone. Are you absolutely sure?');
+                if (!confirmed) {
+                    return;
+                }
+                
+                const doubleConfirmed = confirm('Final confirmation: Delete ALL photos? This will remove both original and dithered versions.');
+                if (!doubleConfirmed) {
+                    return;
+                }
+                
+                try {
+                    notifyUserActivity(); // Track delete interaction
+                    const response = await fetch('/api/photos/delete-all', {
+                        method: 'POST'
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        alert(result.message || 'All photos deleted successfully');
+                        // Refresh gallery to show empty state
+                        loadPhotos(1);
+                    } else {
+                        const error = await response.json();
+                        alert(`Error: ${error.detail}`);
+                    }
+                } catch (error) {
+                    console.error('Error deleting photos:', error);
+                    alert('Error deleting photos');
+                }
+            }
+            
             // Load photos on page load
             document.addEventListener('DOMContentLoaded', function() {
                 loadPhotos();
                 updateAutoRefreshInterval();
+                updateBatteryLevel();
                 
                 // Add event listener for dithering method changes
                 document.getElementById('dithering-method').addEventListener('change', toggleOrderedSettings);
+                
+                // Update battery level every 30 seconds
+                setInterval(updateBatteryLevel, 30000);
             });
+            
+            async function updateBatteryLevel() {
+                try {
+                    const response = await fetch('/api/battery');
+                    if (response.ok) {
+                        const data = await response.json();
+                        const batteryElement = document.getElementById('battery-level');
+                        
+                        if (data.battery_level !== null && data.battery_level !== undefined) {
+                            batteryElement.textContent = `battery: ${data.battery_level}%`;
+                            
+                            // Add visual indicator based on battery level
+                            batteryElement.className = '';
+                            if (data.battery_level <= 10) {
+                                batteryElement.style.color = '#d32f2f'; // Red for low battery
+                            } else if (data.battery_level <= 25) {
+                                batteryElement.style.color = '#f57c00'; // Orange for warning
+                            } else {
+                                batteryElement.style.color = ''; // Default color
+                            }
+                        } else {
+                            batteryElement.textContent = 'battery: --%';
+                            batteryElement.style.color = '#666'; // Gray for unknown
+                        }
+                    }
+                } catch (error) {
+                    console.log('Could not fetch battery level:', error);
+                    const batteryElement = document.getElementById('battery-level');
+                    batteryElement.textContent = 'battery: --%';
+                    batteryElement.style.color = '#666';
+                }
+            }
             
             // Close modal when clicking outside of it
             window.onclick = function(event) {
@@ -1528,6 +1636,50 @@ async def get_system_status():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Hardware service unavailable: {str(e)}")
 
+@app.get("/api/battery")
+async def get_battery_level():
+    """Get battery level from PiSugar."""
+    import socket
+    import subprocess
+    
+    try:
+        # Try Unix Domain Socket first (most reliable)
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect('/tmp/pisugar-server.sock')
+            sock.send(b'get battery\n')
+            response = sock.recv(1024).decode('utf-8').strip()
+            sock.close()
+            
+            if response.startswith('battery:'):
+                battery_level = int(response.split(':')[1])
+                return {"battery_level": battery_level, "source": "uds"}
+        except Exception as e:
+            print(f"UDS failed: {e}")
+        
+        # Fallback to TCP
+        try:
+            result = subprocess.run(
+                ['nc', '-q', '0', '127.0.0.1', '8423'],
+                input='get battery\n',
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                response = result.stdout.strip()
+                if response.startswith('battery:'):
+                    battery_level = int(response.split(':')[1])
+                    return {"battery_level": battery_level, "source": "tcp"}
+        except Exception as e:
+            print(f"TCP failed: {e}")
+        
+        # If both fail, return unknown
+        return {"battery_level": None, "source": "unknown", "error": "Could not connect to PiSugar"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get battery level: {str(e)}")
+
 @app.post("/api/photos/{photo_id}/reprocess")
 async def reprocess_single_photo(photo_id: str):
     """Reprocess a single photo to create missing dithered version."""
@@ -1536,6 +1688,95 @@ async def reprocess_single_photo(photo_id: str):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reprocess photo: {str(e)}")
+
+@app.get("/api/photos/download-all")
+async def download_all_photos():
+    """Download all photos as a ZIP file."""
+    import zipfile
+    import tempfile
+    from fastapi.responses import StreamingResponse
+    import io
+    
+    try:
+        # Get all photos from hardware service
+        all_photos = await reframe_client.get("/photos")
+        
+        if not all_photos:
+            raise HTTPException(status_code=404, detail="No photos found")
+        
+        # Create ZIP file in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for photo in all_photos:
+                try:
+                    # Add original photo
+                    if photo.get("original_path"):
+                        orig_path = photo["original_path"].replace("/photos/", "").replace("/dithered/", "")
+                        if photo.get("original_path", "").startswith("/photos/"):
+                            file_path = os.path.join(PHOTOS_PATH, orig_path)
+                        else:
+                            file_path = photo["original_path"]
+                        
+                        if os.path.exists(file_path):
+                            zip_file.write(file_path, f"original/{orig_path}")
+                    
+                    # Add dithered photo if available
+                    if photo.get("dithered_path"):
+                        dith_path = photo["dithered_path"].replace("/photos/", "").replace("/dithered/", "")
+                        if photo.get("dithered_path", "").startswith("/dithered/"):
+                            file_path = os.path.join(DITHERED_PHOTOS_PATH, dith_path)
+                        else:
+                            file_path = photo["dithered_path"]
+                        
+                        if os.path.exists(file_path):
+                            zip_file.write(file_path, f"dithered/{dith_path}")
+                            
+                except Exception as e:
+                    print(f"Error adding photo {photo.get('id', 'unknown')} to ZIP: {e}")
+                    continue
+        
+        zip_buffer.seek(0)
+        
+        # Return ZIP file as streaming response
+        return StreamingResponse(
+            io.BytesIO(zip_buffer.getvalue()),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename=reframe-photos-{datetime.now().strftime('%Y%m%d')}.zip"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create download: {str(e)}")
+
+@app.post("/api/photos/delete-all")
+async def delete_all_photos():
+    """Delete all photos from the system."""
+    try:
+        # Get all photos from hardware service
+        all_photos = await reframe_client.get("/photos")
+        
+        if not all_photos:
+            return {"success": True, "message": "No photos to delete"}
+        
+        deleted_count = 0
+        
+        # Delete each photo through the hardware service
+        for photo in all_photos:
+            try:
+                result = await reframe_client.delete(f"/photos/{photo['id']}")
+                if result.get("success"):
+                    deleted_count += 1
+            except Exception as e:
+                print(f"Error deleting photo {photo.get('id', 'unknown')}: {e}")
+                continue
+        
+        return {
+            "success": True, 
+            "message": f"Successfully deleted {deleted_count} photos",
+            "deleted_count": deleted_count
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete photos: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
