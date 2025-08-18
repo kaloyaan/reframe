@@ -134,7 +134,7 @@ class CameraManager:
             except Exception as e:
                 logging.warning(f"Could not set {control_name}: {e}")
 
-    def capture_photo_with_metadata(self, file_path=None):
+    def capture_photo_with_metadata(self, file_path=None, fast_mode=False):
         """Capture a photo and return metadata like the dashboard API."""
         if file_path is None:
             # Use FileManager to get consistent naming
@@ -142,7 +142,7 @@ class CameraManager:
             file_path = file_manager.get_new_file_path(SAVE_PATH, "png")
         
         try:
-            self.capture_photo(file_path)
+            self.capture_photo(file_path, fast_mode=fast_mode)
             
             # Get file info
             file_size = os.path.getsize(file_path)
@@ -258,10 +258,15 @@ class CameraManager:
             logging.error(f"Error shutting down system: {e}")
             return False
 
-    def capture_photo(self, file_path):
+    def capture_photo(self, file_path, fast_mode=False):
         """Capture a photo and save it to the specified file path."""
         self.update_activity_time()
-        sleep(0.3)  # Allow autofocus to complete
+        # OPTIMIZATION: Faster autofocus for startup photo
+        if fast_mode:
+            sleep(0.1)  # Fast autofocus for startup
+            logging.info("Fast autofocus mode: 0.1s delay")
+        else:
+            sleep(0.3)  # Normal autofocus delay
         self.picam2.capture_file(file_path)  # Capture the photo
         logging.info(f"Photo saved to {file_path}")
 
@@ -710,14 +715,31 @@ class FileManager:
 
 
 class EInkDisplay:
-    """Manages the e-ink display."""
+    """Manages the e-ink display with lazy initialization for faster startup."""
 
     def __init__(self):
-        self.epd = epd4in0e.EPD()
-        self.epd.init()
+        # OPTIMIZATION: Don't initialize e-ink hardware immediately - saves 5-10s on startup
+        self.epd = None
+        self._initialized = False
+        logging.info("E-ink display: Lazy initialization enabled")
+
+    def _ensure_initialized(self):
+        """Initialize e-ink display only when first needed."""
+        if not self._initialized:
+            logging.info("Initializing e-ink display hardware...")
+            import time
+            start_time = time.time()
+            
+            self.epd = epd4in0e.EPD()
+            self.epd.init()
+            
+            init_time = time.time() - start_time
+            logging.info(f"E-ink display ready in {init_time:.2f}s")
+            self._initialized = True
 
     def display_image(self, image):
         """Displays the provided image on the e-ink display."""
+        self._ensure_initialized()  # Initialize only when first used
         buffer = ImageProcessor.img2buffer(image)
         if buffer:
             self.epd.display(buffer)
@@ -777,6 +799,7 @@ class EInkDisplay:
 
     def clear_display(self):
         """Clear the e-ink display."""
+        self._ensure_initialized()  # Initialize only when first used
         try:
             self.epd.Clear()
             logging.info("E-ink display cleared")
@@ -787,7 +810,8 @@ class EInkDisplay:
 
     def sleep(self):
         """Puts the e-ink display to sleep."""
-        self.epd.sleep()
+        if self._initialized and self.epd:
+            self.epd.sleep()
 
 
 class CameraSystem:
@@ -799,15 +823,24 @@ class CameraSystem:
         self.eink_display = EInkDisplay()
         self.timeout_thread = None
         self.timeout_running = False
-        self.start_timeout_monitor()
+        self._timeout_started = False
+        # OPTIMIZATION: Defer timeout monitor until after first photo for faster startup
+        logging.info("Timeout monitor initialization deferred for fast startup")
     
     def start_timeout_monitor(self):
         """Start the background timeout monitoring thread."""
-        if self.camera_manager.is_timeout_enabled():
+        if not self._timeout_started and self.camera_manager.is_timeout_enabled():
             self.timeout_running = True
             self.timeout_thread = threading.Thread(target=self._timeout_monitor_loop, daemon=True)
             self.timeout_thread.start()
+            self._timeout_started = True
             logging.info(f"Auto-timeout monitor started: {self.camera_manager.get_timeout_minutes()} minutes")
+    
+    def start_timeout_monitor_deferred(self):
+        """Start the timeout monitor after first photo for faster startup."""
+        if not self._timeout_started:
+            logging.info("Starting deferred timeout monitor...")
+            self.start_timeout_monitor()
     
     def stop_timeout_monitor(self):
         """Stop the background timeout monitoring thread."""
@@ -839,7 +872,7 @@ class CameraSystem:
         """Update activity time."""
         self.camera_manager.update_activity_time()
         
-    def capture_photo_api(self):
+    def capture_photo_api(self, fast_mode=False):
         """API-style photo capture that returns metadata."""
         try:
             # Get a new file path
@@ -847,7 +880,7 @@ class CameraSystem:
             logging.info(f"Capturing photo to: {photo_path}")
             
             # Capture photo with metadata
-            result = self.camera_manager.capture_photo_with_metadata(photo_path)
+            result = self.camera_manager.capture_photo_with_metadata(photo_path, fast_mode=fast_mode)
             
             if result["success"]:
                 logging.info(f"Photo captured successfully: {result['photo_id']}")
@@ -1113,22 +1146,39 @@ def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
 
 def main():
     global camera_system
+    
+    # OPTIMIZATION: Add timing to measure startup performance
+    overall_start = time.time()
+    logging.info("🚀 REFRAME FAST STARTUP: Initializing camera system...")
+    
     # Initialize camera system once for both API and button loop
+    init_start = time.time()
     camera_system = CameraSystem()
+    init_time = time.time() - init_start
+    logging.info(f"📷 Camera system initialized in {init_time:.2f}s")
 
-    # Take an initial photo on startup
-    logging.info("Taking initial startup photo...")
+    # Take an initial photo on startup with FAST MODE
+    logging.info("📸 Taking FAST startup photo...")
+    photo_start = time.time()
     try:
         with _operation_lock:
-            result = camera_system.capture_photo_api()
+            # OPTIMIZATION: Use fast_mode for startup photo (0.1s autofocus instead of 0.3s)
+            result = camera_system.capture_photo_api(fast_mode=True)
+        photo_time = time.time() - photo_start
+        
         if result.get("success"):
-            logging.info("Startup photo captured successfully: %s", result.get("photo_id", "unknown"))
+            overall_time = time.time() - overall_start
+            logging.info("✅ Startup photo captured successfully: %s in %.2fs", result.get("photo_id", "unknown"), photo_time)
             if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True):
-                logging.info("Startup photo displayed on screen")
+                logging.info("🖥️  Startup photo displayed on screen")
+            logging.info("🏁 SYSTEM READY in %.2fs total", overall_time)
+            
+            # OPTIMIZATION: Start timeout monitor after first photo is complete
+            camera_system.start_timeout_monitor_deferred()
         else:
-            logging.warning("Failed to capture startup photo: %s", result.get("message", "unknown error"))
+            logging.warning("❌ Failed to capture startup photo: %s", result.get("message", "unknown error"))
     except Exception as e:
-        logging.error("Error taking startup photo: %s", e)
+        logging.error("💥 Error taking startup photo: %s", e)
 
     # Initialize I2C for power button detection
     I2C_ADDRESS = 0x57
