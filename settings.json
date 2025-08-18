@@ -4,7 +4,7 @@
       "width": 1200,
       "height": 800
     },
-    "exposure_value": -0.25,
+    "exposure_value": 0,
     "sharpness": 3,
     "autofocus_mode": 2
   },
@@ -13,7 +13,7 @@
     "brightness_factor": 1.1,
     "color_factor": 1.4,
     "dithering_method": "floyd_steinberg",
-    "bayer_size": 4,
+    "bayer_size": 2,
     "threshold_scale": 1
   },
   "display": {

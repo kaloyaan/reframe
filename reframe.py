@@ -103,7 +103,7 @@ class CameraManager:
             return {
                 "camera": {
                     "resolution": {"width": 1200, "height": 800},
-                    "exposure_value": -0.25,
+                    "exposure_value": 0,
                     "sharpness": 3,
                     "autofocus_mode": 2
                 },
@@ -204,7 +204,7 @@ class CameraManager:
         
         # Build controls dictionary from settings
         controls = {
-            "ExposureValue": camera_settings.get("exposure_value", -0.25),
+            "ExposureValue": camera_settings.get("exposure_value", 0),
             "Sharpness": camera_settings.get("sharpness", 3)
         }
         

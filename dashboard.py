@@ -34,7 +34,7 @@ class SettingsManager:
         self.default_settings = {
             "camera": {
                 "resolution": {"width": 1200, "height": 800},
-                "exposure_value": -0.25,
+                "exposure_value": 0,
                 "sharpness": 3,
                 "autofocus_mode": 2
             },
@@ -846,11 +846,11 @@ async def dashboard():
                 </div>
                 
                 <div class="settings-actions" style="margin-top: 20px; border-top: 1px solid var(--secondary-color); padding-top: 20px;">
-                    <div id="download-controls">
-                        <button class="button" onclick="downloadAllPhotos()" style="margin-right: 20px;">download all photos</button>
-                        <button class="button" onclick="abortDownload()" id="abort-btn" style="background: #d32f2f; display: none;">abort download</button>
+                    <div id="download-controls" style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px;">
+                        <button class="button" onclick="downloadAllPhotos()" style="padding: 12px 20px; min-width: 160px;">download all photos</button>
+                        <button class="button" onclick="abortDownload()" id="abort-btn" style="background: #d32f2f; display: none; padding: 12px 20px; min-width: 140px;">abort download</button>
                     </div>
-                    <button class="button" onclick="deleteAllPhotos()" style="background: #d32f2f;">delete all photos</button>
+                    <button class="button" onclick="deleteAllPhotos()" style="background: #d32f2f; padding: 12px 20px; min-width: 160px;">delete all photos</button>
                 </div>
             </div>
         </div>
@@ -1293,7 +1293,7 @@ async def dashboard():
                         const defaultSettings = {
                             camera: {
                                 resolution: {width: 1200, height: 800},
-                                exposure_value: -0.25,
+                                exposure_value: 0,
                                 sharpness: 3,
                                 autofocus_mode: 2
                             },
@@ -1405,11 +1405,10 @@ async def dashboard():
                     const totalPhotos = startData.total_photos;
                     
                     // Poll for progress
-                    let progressInterval;
                     let attempts = 0;
                     const maxAttempts = 600; // 5 minutes max
                     
-                    progressInterval = setInterval(async () => {
+                    window.progressInterval = setInterval(async () => {
                         attempts++;
                         
                         try {
@@ -1423,7 +1422,8 @@ async def dashboard():
                                         downloadBtn.textContent = `${progress.message} (${percent}%)`;
                                     } else if (progress.status === 'completed') {
                                         downloadBtn.textContent = 'download ready!';
-                                        clearInterval(progressInterval);
+                                        clearInterval(window.progressInterval);
+                                        window.progressInterval = null;
                                         
                                         // Hide abort button
                                         if (abortBtn) {
@@ -1455,7 +1455,8 @@ async def dashboard():
                                             throw new Error('Failed to download file');
                                         }
                                     } else if (progress.status === 'aborted') {
-                                        clearInterval(progressInterval);
+                                        clearInterval(window.progressInterval);
+                                        window.progressInterval = null;
                                         downloadBtn.textContent = 'download aborted';
                                         setTimeout(() => {
                                             if (downloadBtn) {
@@ -1476,13 +1477,15 @@ async def dashboard():
                                 throw new Error('Failed to get progress');
                             }
                         } catch (error) {
-                            clearInterval(progressInterval);
+                            clearInterval(window.progressInterval);
+                            window.progressInterval = null;
                             throw error;
                         }
                         
                         // Timeout after max attempts
                         if (attempts >= maxAttempts) {
-                            clearInterval(progressInterval);
+                            clearInterval(window.progressInterval);
+                            window.progressInterval = null;
                             throw new Error('Download timed out after 5 minutes');
                         }
                     }, 1000); // Check progress every second
@@ -1513,10 +1516,31 @@ async def dashboard():
                     
                     if (response.ok) {
                         const abortBtn = document.getElementById('abort-btn');
+                        const downloadBtn = document.querySelector('button[onclick="downloadAllPhotos()"]');
+                        
                         if (abortBtn) {
                             abortBtn.textContent = 'aborting...';
                             abortBtn.disabled = true;
                         }
+                        
+                        // Clear any existing progress interval
+                        if (window.progressInterval) {
+                            clearInterval(window.progressInterval);
+                            window.progressInterval = null;
+                        }
+                        
+                        // Reset download button after a short delay
+                        setTimeout(() => {
+                            if (downloadBtn) {
+                                downloadBtn.textContent = 'download all photos';
+                                downloadBtn.disabled = false;
+                                downloadBtn.style.opacity = '1';
+                            }
+                            if (abortBtn) {
+                                abortBtn.style.display = 'none';
+                            }
+                        }, 1000);
+                        
                     } else {
                         alert('Failed to abort download');
                     }
@@ -2002,6 +2026,7 @@ async def create_zip_background(all_photos):
     """Background task to create ZIP file."""
     global download_progress, download_abort
     import tempfile
+    import zipfile
     
     try:
         # Create temporary file
