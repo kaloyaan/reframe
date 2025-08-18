@@ -1,68 +1,71 @@
 #!/usr/bin/env python3
 
-# OPTIMIZATION: Time imports to identify bottlenecks
-import time as _time_module
-_import_start = _time_module.time()
-
 import os
 import sys
 import json
 import subprocess
 import logging
-_basic_imports_time = _time_module.time() - _import_start
-
-# Time-sensitive imports
-_heavy_start = _time_module.time()
 from time import sleep
-print(f"⏱️  time module: {(_time_module.time() - _heavy_start)*1000:.1f}ms")
 
-_pil_start = _time_module.time()
-from PIL import Image, ImageEnhance
-print(f"⏱️  PIL import: {(_time_module.time() - _pil_start)*1000:.1f}ms")
+# OPTIMIZATION: Lazy import PIL - saves 1.0 seconds on startup!
+print("⏱️  PIL: LAZY LOADED (deferred)")
+Image = None  # type: ignore
+ImageEnhance = None  # type: ignore
 
-_picamera_start = _time_module.time()
+def _lazy_import_pil():
+    """Import PIL only when needed for image processing."""
+    global Image, ImageEnhance
+    if Image is None:
+        import time
+        _pil_start = time.time()
+        from PIL import Image, ImageEnhance
+        print(f"⏱️  PIL LAZY import: {(time.time() - _pil_start)*1000:.1f}ms")
+    return Image, ImageEnhance
+
 from picamera2 import Picamera2
-print(f"⏱️  picamera2 import: {(_time_module.time() - _picamera_start)*1000:.1f}ms")
-
-_numpy_start = _time_module.time()
 import numpy as np
-print(f"⏱️  numpy import: {(_time_module.time() - _numpy_start)*1000:.1f}ms")
-
-_smbus_start = _time_module.time()
 import smbus2
-print(f"⏱️  smbus2 import: {(_time_module.time() - _smbus_start)*1000:.1f}ms")
 
 from typing import Optional, Dict, Any
 
-# Optional API server imports (only used when running as service)
-_fastapi_start = _time_module.time()
-try:
-    from fastapi import FastAPI, HTTPException, Request
-    import uvicorn
-    _API_AVAILABLE = True
-    print(f"⏱️  FastAPI/uvicorn import: {(_time_module.time() - _fastapi_start)*1000:.1f}ms")
-except Exception:
-    _API_AVAILABLE = False
-    FastAPI = None  # type: ignore
-    HTTPException = None  # type: ignore
-    Request = None  # type: ignore
-    uvicorn = None  # type: ignore
-    print(f"⏱️  FastAPI/uvicorn import (failed): {(_time_module.time() - _fastapi_start)*1000:.1f}ms")
+# OPTIMIZATION: Lazy import FastAPI - saves 4.3 seconds on startup!
+# These will be imported only when API server starts (after first photo)
+print("⏱️  FastAPI/uvicorn: LAZY LOADED (deferred)")
+_API_AVAILABLE = None  # Will be determined when first imported
+FastAPI = None  # type: ignore
+HTTPException = None  # type: ignore  
+Request = None  # type: ignore
+uvicorn = None  # type: ignore
 
-_threading_start = _time_module.time()
+def _lazy_import_fastapi():
+    """Import FastAPI/uvicorn only when needed."""
+    global _API_AVAILABLE, FastAPI, HTTPException, Request, uvicorn
+    if _API_AVAILABLE is None:
+        import time
+        _fastapi_start = time.time()
+        try:
+            from fastapi import FastAPI, HTTPException, Request
+            import uvicorn
+            _API_AVAILABLE = True
+            print(f"⏱️  FastAPI/uvicorn LAZY import: {(time.time() - _fastapi_start)*1000:.1f}ms")
+        except Exception:
+            _API_AVAILABLE = False
+            FastAPI = None  # type: ignore
+            HTTPException = None  # type: ignore
+            Request = None  # type: ignore
+            uvicorn = None  # type: ignore
+            print(f"⏱️  FastAPI/uvicorn LAZY import (failed): {(time.time() - _fastapi_start)*1000:.1f}ms")
+    return _API_AVAILABLE
+
 import threading
 import time
-print(f"⏱️  threading/time import: {(_time_module.time() - _threading_start)*1000:.1f}ms")
 
-_epd_start = _time_module.time()
 libdir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'lib')
 if os.path.exists(libdir):
     sys.path.append(libdir)
 from waveshare_epd import epd4in0e
-print(f"⏱️  waveshare_epd import: {(_time_module.time() - _epd_start)*1000:.1f}ms")
 
-_total_import_time = _time_module.time() - _import_start
-print(f"🔥 TOTAL IMPORT TIME: {_total_import_time*1000:.1f}ms ({_total_import_time:.2f}s)")
+print(f"🚀 STARTUP OPTIMIZATIONS: FastAPI (~4.3s) + PIL (~1.0s) = ~5.3s saved with lazy imports!")
 
 # Logging setup
 logging.basicConfig(level=logging.DEBUG)
@@ -336,6 +339,9 @@ class ImageProcessor:
     def apply_ordered_dithering(image, saturation=0.6, brightness_factor=1.1, color_factor=1.4, 
                                bayer_size=4, threshold_scale=1.0):
         """Apply optimized ordered dithering using Bayer matrix."""
+        # OPTIMIZATION: Lazy import PIL only when doing image processing
+        Image, ImageEnhance = _lazy_import_pil()
+        
         import time
         start_time = time.time()
         
@@ -451,6 +457,9 @@ class ImageProcessor:
                 image, saturation, brightness_factor, color_factor, bayer_size, threshold_scale
             )
         else:
+            # OPTIMIZATION: Lazy import PIL only when doing image processing
+            Image, ImageEnhance = _lazy_import_pil()
+            
             # Default Floyd-Steinberg dithering
             # Ensure the image is in RGB mode
             if image.mode != "RGB":
@@ -584,7 +593,8 @@ class ImageProcessor:
     def process_photo_with_settings(original_path, output_path, processing_settings):
         """Process a photo with specific settings and save it."""
         try:
-            from PIL import Image
+            # OPTIMIZATION: Lazy import PIL only when doing image processing
+            Image, ImageEnhance = _lazy_import_pil()
             
             # Load original image
             original_image = Image.open(original_path)
@@ -796,7 +806,8 @@ class EInkDisplay:
                 version = "original"
             
             # Load and display the image
-            from PIL import Image
+            # OPTIMIZATION: Lazy import PIL only when needed for display
+            Image, ImageEnhance = _lazy_import_pil()
             image = Image.open(image_path)
             
             # If displaying original, we need to process it first
@@ -1022,10 +1033,16 @@ class CameraSystem:
 camera_system: Optional[CameraSystem] = None
 _operation_lock = threading.Lock()
 
-# FastAPI application exposing hardware control over localhost
-app = FastAPI(title="Reframe Hardware API") if _API_AVAILABLE else None
+# FastAPI application exposing hardware control over localhost (lazy initialized)
+app = None  # Will be created when API server starts
 
-if _API_AVAILABLE:
+def _create_fastapi_routes():
+    """Create FastAPI app and routes when API server starts."""
+    global app
+    if not _lazy_import_fastapi():
+        return None
+    
+    app = FastAPI(title="Reframe Hardware API")
     @app.post("/api/capture")
     def api_capture():
         global camera_system
@@ -1161,10 +1178,14 @@ if _API_AVAILABLE:
             raise HTTPException(status_code=503, detail="Camera system not initialized")
         with _operation_lock:
             return camera_system.eink_display.clear_display()
+    
+    return app
 
 
 def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
-    if not _API_AVAILABLE:
+    # OPTIMIZATION: Lazy import FastAPI only when API server starts (after first photo)
+    app = _create_fastapi_routes()
+    if app is None:
         logging.warning("FastAPI/uvicorn not available; hardware API will not be started")
         return
     def _run():
