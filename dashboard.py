@@ -851,7 +851,10 @@ async def dashboard():
                         <button class="button" onclick="downloadAllPhotos()" style="padding: 12px 20px; min-width: 160px;">download all photos</button>
                         <button class="button" onclick="abortDownload()" id="abort-btn" style="background: #d32f2f; display: none; padding: 12px 20px; min-width: 140px;">abort download</button>
                     </div>
-                    <button class="button" onclick="deleteAllPhotos()" style="background: #d32f2f; padding: 12px 20px; min-width: 160px;">delete all photos</button>
+                    <div id="delete-controls" style="align-items: center;">
+                        <button class="button" onclick="deleteAllPhotos()" style="background: #d32f2f; padding: 12px 20px; min-width: 160px;">delete all photos</button>
+                        <button class="button" onclick="abortDelete()" id="abort-delete-btn" style="background: #d32f2f; display: none; padding: 12px 20px; min-width: 140px;">abort deletion</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1578,22 +1581,180 @@ async def dashboard():
                 
                 try {
                     notifyUserActivity(); // Track delete interaction
-                    const response = await fetch('/api/photos/delete-all', {
+                    
+                    // Find the delete button and show loading state
+                    const deleteBtn = document.querySelector('button[onclick="deleteAllPhotos()"]');
+                    const abortDeleteBtn = document.getElementById('abort-delete-btn');
+                    if (deleteBtn) {
+                        const originalText = deleteBtn.textContent;
+                        deleteBtn.textContent = 'starting deletion...';
+                        deleteBtn.disabled = true;
+                        deleteBtn.style.opacity = '0.7';
+                    }
+                    
+                    // Show abort button
+                    if (abortDeleteBtn) {
+                        abortDeleteBtn.style.display = 'inline-block';
+                    }
+                    
+                    // Start the delete process
+                    const startResponse = await fetch('/api/photos/delete-all/start', {
+                        method: 'POST'
+                    });
+                    
+                    if (!startResponse.ok) {
+                        const error = await startResponse.json();
+                        throw new Error(error.detail || 'Failed to start deletion');
+                    }
+                    
+                    const startData = await startResponse.json();
+                    
+                    // If no photos to delete, show message and return
+                    if (startData.status === 'completed') {
+                        alert(startData.message || 'No photos to delete');
+                        if (deleteBtn) {
+                            deleteBtn.textContent = originalText;
+                            deleteBtn.disabled = false;
+                            deleteBtn.style.opacity = '1';
+                        }
+                        if (abortDeleteBtn) {
+                            abortDeleteBtn.style.display = 'none';
+                        }
+                        return;
+                    }
+                    
+                    const totalPhotos = startData.total_photos;
+                    
+                    // Poll for progress
+                    let attempts = 0;
+                    const maxAttempts = 300; // 5 minutes max
+                    
+                    window.deleteProgressInterval = setInterval(async () => {
+                        attempts++;
+                        
+                        try {
+                            const progressResponse = await fetch('/api/photos/delete-all/progress');
+                            if (progressResponse.ok) {
+                                const progress = await progressResponse.json();
+                                
+                                if (deleteBtn) {
+                                    if (progress.status === 'deleting') {
+                                        const percent = Math.round((progress.processed / progress.total) * 100);
+                                        deleteBtn.textContent = `${progress.message} (${percent}%)`;
+                                    } else if (progress.status === 'completed') {
+                                        deleteBtn.textContent = 'deletion complete!';
+                                        clearInterval(window.deleteProgressInterval);
+                                        window.deleteProgressInterval = null;
+                                        
+                                        // Hide abort button
+                                        if (abortDeleteBtn) {
+                                            abortDeleteBtn.style.display = 'none';
+                                        }
+                                        
+                                        // Show success message and refresh gallery
+                                        alert(progress.message || 'All photos deleted successfully');
+                                        loadPhotos(1);
+                                        
+                                        setTimeout(() => {
+                                            if (deleteBtn) {
+                                                deleteBtn.textContent = originalText;
+                                                deleteBtn.disabled = false;
+                                                deleteBtn.style.opacity = '1';
+                                            }
+                                        }, 2000);
+                                    } else if (progress.status === 'aborted') {
+                                        clearInterval(window.deleteProgressInterval);
+                                        window.deleteProgressInterval = null;
+                                        deleteBtn.textContent = 'deletion aborted';
+                                        setTimeout(() => {
+                                            if (deleteBtn) {
+                                                deleteBtn.textContent = originalText;
+                                                deleteBtn.disabled = false;
+                                                deleteBtn.style.opacity = '1';
+                                            }
+                                            if (abortDeleteBtn) {
+                                                abortDeleteBtn.style.display = 'none';
+                                            }
+                                        }, 2000);
+                                        return;
+                                    } else if (progress.status === 'error') {
+                                        throw new Error(progress.message);
+                                    }
+                                }
+                            } else {
+                                throw new Error('Failed to get progress');
+                            }
+                        } catch (error) {
+                            clearInterval(window.deleteProgressInterval);
+                            window.deleteProgressInterval = null;
+                            throw error;
+                        }
+                        
+                        // Timeout after max attempts
+                        if (attempts >= maxAttempts) {
+                            clearInterval(window.deleteProgressInterval);
+                            window.deleteProgressInterval = null;
+                            throw new Error('Deletion timed out after 5 minutes');
+                        }
+                    }, 1000); // Check progress every second
+                    
+                } catch (error) {
+                    console.error('Error deleting photos:', error);
+                    alert(`Error: ${error.message}`);
+                    
+                    // Reset button on error
+                    const deleteBtn = document.querySelector('button[onclick="deleteAllPhotos()"]');
+                    const abortDeleteBtn = document.getElementById('abort-delete-btn');
+                    if (deleteBtn) {
+                        deleteBtn.textContent = 'delete all photos';
+                        deleteBtn.disabled = false;
+                        deleteBtn.style.opacity = '1';
+                    }
+                    if (abortDeleteBtn) {
+                        abortDeleteBtn.style.display = 'none';
+                    }
+                }
+            }
+            
+            async function abortDelete() {
+                try {
+                    const response = await fetch('/api/photos/delete-all/abort', {
                         method: 'POST'
                     });
                     
                     if (response.ok) {
-                        const result = await response.json();
-                        alert(result.message || 'All photos deleted successfully');
-                        // Refresh gallery to show empty state
-                        loadPhotos(1);
+                        const abortDeleteBtn = document.getElementById('abort-delete-btn');
+                        const deleteBtn = document.querySelector('button[onclick="deleteAllPhotos()"]');
+                        
+                        if (abortDeleteBtn) {
+                            abortDeleteBtn.textContent = 'aborting...';
+                            abortDeleteBtn.disabled = true;
+                        }
+                        
+                        // Clear any existing progress interval
+                        if (window.deleteProgressInterval) {
+                            clearInterval(window.deleteProgressInterval);
+                            window.deleteProgressInterval = null;
+                        }
+                        
+                        // Reset delete button after a short delay
+                        setTimeout(() => {
+                            if (deleteBtn) {
+                                deleteBtn.textContent = 'delete all photos';
+                                deleteBtn.disabled = false;
+                                deleteBtn.style.opacity = '1';
+                            }
+                            if (abortDeleteBtn) {
+                                abortDeleteBtn.style.display = 'none';
+                            }
+                        }, 1000);
+                        
                     } else {
-                        const error = await response.json();
-                        alert(`Error: ${error.detail}`);
+                        alert('Failed to abort deletion');
                     }
                 } catch (error) {
-                    console.error('Error deleting photos:', error);
-                    alert('Error deleting photos');
+                    console.error('Error aborting deletion:', error);
+                    alert('Error aborting deletion');
                 }
             }
             
@@ -1956,6 +2117,10 @@ async def reprocess_single_photo(photo_id: str):
 download_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
 download_abort = False
 
+# Global variable to track delete progress
+delete_progress = {"status": "idle", "processed": 0, "total": 0, "message": ""}
+delete_abort = False
+
 @app.post("/api/photos/download-all/start")
 async def start_download_all(background_tasks: BackgroundTasks):
     """Start the download process and return immediately."""
@@ -2131,6 +2296,106 @@ async def create_zip_background(all_photos):
                 os.unlink(temp_path)
         except:
             pass
+
+async def delete_photos_background(all_photos):
+    """Background task to delete photos."""
+    global delete_progress, delete_abort
+    import asyncio
+    
+    try:
+        delete_progress["status"] = "deleting"
+        delete_progress["message"] = "Deleting photos..."
+        
+        total_photos = len(all_photos)
+        deleted_count = 0
+        
+        for photo in all_photos:
+            # Check for abort
+            if delete_abort:
+                delete_progress["status"] = "aborted"
+                delete_progress["message"] = "Deletion aborted by user"
+                return
+            
+            try:
+                result = await reframe_client.delete(f"/photos/{photo['id']}")
+                if result.get("success"):
+                    deleted_count += 1
+                
+                delete_progress["processed"] = deleted_count
+                delete_progress["message"] = f"Deleted {deleted_count}/{total_photos} photos"
+                
+                # Small delay for responsiveness
+                if deleted_count % 2 == 0:
+                    await asyncio.sleep(0.01)
+                    
+            except Exception as e:
+                print(f"Error deleting photo {photo.get('id', 'unknown')}: {e}")
+                delete_progress["processed"] = deleted_count
+                continue
+        
+        # Check for abort before marking as completed
+        if delete_abort:
+            delete_progress["status"] = "aborted"
+            delete_progress["message"] = "Deletion aborted by user"
+            return
+        
+        # Mark as completed
+        delete_progress["status"] = "completed"
+        delete_progress["message"] = f"Successfully deleted {deleted_count} photos"
+        
+    except Exception as e:
+        delete_progress["status"] = "error"
+        delete_progress["message"] = f"Error: {str(e)}"
+
+@app.post("/api/photos/delete-all/start")
+async def start_delete_all(background_tasks: BackgroundTasks):
+    """Start the delete process and return immediately."""
+    global delete_progress
+    
+    try:
+        # Get all photos from hardware service
+        all_photos = await reframe_client.get("/photos")
+        
+        if not all_photos:
+            return {"status": "completed", "message": "No photos to delete", "deleted_count": 0}
+        
+        # Initialize progress
+        global delete_abort
+        delete_abort = False
+        delete_progress = {
+            "status": "preparing",
+            "processed": 0,
+            "total": len(all_photos),
+            "message": "Preparing deletion..."
+        }
+        
+        # Start background task
+        background_tasks.add_task(delete_photos_background, all_photos)
+        
+        return {"status": "started", "total_photos": len(all_photos)}
+        
+    except Exception as e:
+        delete_progress = {"status": "error", "processed": 0, "total": 0, "message": str(e)}
+        raise HTTPException(status_code=500, detail=f"Failed to start deletion: {str(e)}")
+
+@app.get("/api/photos/delete-all/progress")
+async def get_delete_progress():
+    """Get current delete progress."""
+    global delete_progress
+    return delete_progress
+
+@app.post("/api/photos/delete-all/abort")
+async def abort_delete():
+    """Abort the current delete process."""
+    global delete_abort, delete_progress
+    delete_abort = True
+    delete_progress = {
+        "status": "aborted",
+        "processed": delete_progress.get("processed", 0),
+        "total": delete_progress.get("total", 0),
+        "message": "Deletion aborted by user"
+    }
+    return {"status": "aborted", "message": "Deletion aborted"}
 
 @app.post("/api/photos/delete-all")
 async def delete_all_photos():
