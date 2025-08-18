@@ -333,7 +333,7 @@ class ImageProcessor:
 
         # Get the blended palette (unique colors in hardware order: K, W, Y, R, B, G)
         palette_colors = []
-        color_indices = [0, 1, 5, 4, 3, 2]
+        color_indices = [0, 1, 5, 4, 0, 3, 2]  # Match Floyd-Steinberg palette structure
         for i in color_indices:
             rs, gs, bs = [c * saturation for c in SATURATED_PALETTE[i]]
             rd, gd, bd = [c * (1.0 - saturation) for c in DESATURATED_PALETTE[i]]
@@ -386,12 +386,6 @@ class ImageProcessor:
         
         # Reshape back to image dimensions
         output_array = closest_indices.reshape(height, width).astype(np.uint8)
-        # Ensure we never use the panel's "clear" index (4). Remap any 4 -> 0 (black)
-        try:
-            output_array[output_array == 4] = 0
-        except Exception:
-            # Fallback in case of unexpected types
-            output_array = np.where(output_array == 4, 0, output_array).astype(np.uint8)
 
         # Create palette image
         palette_flat = []
@@ -456,16 +450,6 @@ class ImageProcessor:
 
             # Convert the image using the custom palette and Floyd-Steinberg dithering
             converted_image = image.quantize(palette=palette_image, dither=Image.FLOYDSTEINBERG)
-
-            # Avoid hardware "clear" index (4) — remap any 4 -> 0 (black)
-            try:
-                converted_array = np.array(converted_image, dtype=np.uint8)
-                converted_array[converted_array == 4] = 0
-                converted_image = Image.fromarray(converted_array, mode='P')
-                converted_image.putpalette(palette_image.getpalette())
-            except Exception:
-                # If anything goes wrong, fall back to original converted_image
-                pass
 
             return converted_image
 
