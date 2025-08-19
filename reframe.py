@@ -1201,6 +1201,8 @@ def main():
             return False
 
     prev_state = False
+    button_press_start_time = None
+    LONG_PRESS_THRESHOLD = 2.0  # 2 seconds threshold for long press
 
     # Start API server in background
     try:
@@ -1210,21 +1212,39 @@ def main():
     _start_api_server_in_background(host="127.0.0.1", port=port)
 
     logging.info("System initialized. API server running. Waiting for button press to capture photo...")
+    logging.info(f"Button protection: Long press (>={LONG_PRESS_THRESHOLD}s) will not trigger photo capture")
 
     try:
         while True:
             current_state = is_power_button_pressed()
+            
+            # Button press started
             if current_state and not prev_state:
-                logging.info("Button pressed. Capturing photo...")
-                with _operation_lock:
-                    result = camera_system.capture_photo_api()
-                if result.get("success"):
-                    logging.info("Photo captured%s.", " and displayed" if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True) else "")
-                else:
-                    logging.error("Capture failed: %s", result.get("message", "unknown error"))
-
-                # Pause briefly to debounce and allow the user to view the image
-                sleep(2)
+                button_press_start_time = time.time()
+                logging.info("Button pressed - monitoring for long press protection...")
+            
+            # Button released
+            elif not current_state and prev_state:
+                if button_press_start_time is not None:
+                    press_duration = time.time() - button_press_start_time
+                    
+                    if press_duration < LONG_PRESS_THRESHOLD:
+                        logging.info(f"Short press detected ({press_duration:.1f}s) - capturing photo...")
+                        with _operation_lock:
+                            result = camera_system.capture_photo_api()
+                        if result.get("success"):
+                            logging.info("Photo captured%s.", " and displayed" if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True) else "")
+                        else:
+                            logging.error("Capture failed: %s", result.get("message", "unknown error"))
+                    else:
+                        logging.info(f"Long press detected ({press_duration:.1f}s) - ignoring for photo capture")
+                    
+                    button_press_start_time = None
+                    
+                    # Pause briefly to debounce and allow the user to view the image (only for short presses)
+                    if press_duration < LONG_PRESS_THRESHOLD:
+                        sleep(2)
+            
             prev_state = current_state
             sleep(0.1)
     except KeyboardInterrupt:
