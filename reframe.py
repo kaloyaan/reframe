@@ -6,6 +6,7 @@ import json
 import subprocess
 import logging
 import socket
+from logging.handlers import RotatingFileHandler
 from time import sleep
 
 # Lazy-loaded by _lazy_import_pil() on first use
@@ -69,14 +70,13 @@ libdir = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__)
 if os.path.exists(libdir):
     sys.path.append(libdir)
 
-# Logging setup
-logging.basicConfig(level=logging.INFO)
-
 # Constants for file paths
 BASE_PATH = os.path.dirname(os.path.realpath(__file__))
 SAVE_PATH = os.path.join(BASE_PATH, "photos")
 PROCESSED_PATH = os.path.join(BASE_PATH, "dithered_photos")
 RUNTIME_PATH = os.path.join(BASE_PATH, ".runtime")
+DIAGNOSTICS_PATH = os.path.join(RUNTIME_PATH, "diagnostics.json")
+LOG_PATH = os.path.join(RUNTIME_PATH, "reframe.log")
 HDR_HELPER_PATH = os.path.join(BASE_PATH, "scripts", "enable_hdr.sh")
 ORIGINAL_CAPTURE_EXTENSION = "jpg"
 DISPLAY_IMAGE_WIDTH = 600
@@ -86,6 +86,86 @@ DISPLAY_PANEL_HEIGHT = 600
 DISPLAY_IMAGE_SIZE = (DISPLAY_IMAGE_WIDTH, DISPLAY_IMAGE_HEIGHT)
 DISPLAY_PANEL_SIZE = (DISPLAY_PANEL_WIDTH, DISPLAY_PANEL_HEIGHT)
 BUTTON_POLL_INTERVAL_SECONDS = 0.025
+
+os.makedirs(RUNTIME_PATH, exist_ok=True)
+_log_handlers = [logging.StreamHandler()]
+try:
+    _log_handlers.append(RotatingFileHandler(LOG_PATH, maxBytes=100_000, backupCount=1))
+except OSError:
+    pass
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=_log_handlers,
+    force=True,
+)
+
+_diagnostics_lock = threading.Lock()
+_diagnostics = {"issues": {}, "last_activity": None}
+
+
+def update_diagnostics(component=None, issue=None, activity=None):
+    """Persist current issues and one useful recent activity."""
+    with _diagnostics_lock:
+        changed = False
+        if component:
+            if issue:
+                _diagnostics["issues"][component] = issue
+                changed = True
+            else:
+                changed = _diagnostics["issues"].pop(component, None) is not None
+        if activity:
+            _diagnostics["last_activity"] = activity
+            changed = True
+
+        if not changed:
+            return
+
+        temp_path = f"{DIAGNOSTICS_PATH}.tmp"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as diagnostic_file:
+                json.dump(_diagnostics, diagnostic_file)
+            os.replace(temp_path, DIAGNOSTICS_PATH)
+        except OSError as error:
+            logging.warning("Could not persist diagnostics: %s", error)
+
+
+def get_diagnostics():
+    with _diagnostics_lock:
+        return json.loads(json.dumps(_diagnostics))
+
+
+def record_service_failure(error):
+    """Classify common startup failures into useful physical checks."""
+    lowered = str(error).lower()
+
+    if any(marker in lowered for marker in (
+        "no cameras available",
+        "camera __init__ sequence did not complete",
+        "failed to acquire camera",
+        "pipeline handler",
+        "libcamera",
+    )):
+        component = "camera"
+        message = (
+            "Camera not detected. Check that the ribbon cable is fully seated "
+            "and facing the correct direction at both ends."
+        )
+    elif any(marker in lowered for marker in ("i2c", "smbus", "/dev/i2c")):
+        component = "button"
+        message = "Shutter button hardware is unavailable. Check the PiSugar connection and I2C."
+    elif any(marker in lowered for marker in ("spi", "epd", "e-ink", "eink")):
+        component = "display"
+        message = "Display hardware failed to initialize. Check the display connection and SPI."
+    else:
+        component = "service"
+        message = "Camera service failed to start."
+
+    update_diagnostics(
+        component,
+        message,
+        "Camera service stopped unexpectedly",
+    )
 
 # Color palettes for dithering. We blend between the two to create a saturated look while preserving details.
 # Idea from https://github.com/pimoroni/inky
@@ -282,7 +362,8 @@ class CameraManager:
                 },
                 "display": {
                     "auto_display": True,
-                    "display_timeout": 0
+                    "display_timeout": 0,
+                    "fast_refresh": False
                 },
                 "system": {
                     "auto_refresh_interval": 30,
@@ -375,6 +456,7 @@ class CameraManager:
             }, image
         except Exception as e:
             logging.error(f"Error capturing photo: {e}")
+            update_diagnostics("camera", "Camera capture failed", "Photo capture failed")
             return {
                 "success": False,
                 "error": str(e),
@@ -1075,8 +1157,9 @@ class FileManager:
 class EInkDisplay:
     """Waveshare ePaper display adapter with lazy initialization."""
 
-    def __init__(self):
+    def __init__(self, settings_path="settings.json"):
         # Don't initialize e-ink hardware at startup — takes 5-10s
+        self.settings_path = settings_path
         self.epd = None
         self._initialized = False
         self._display_busy = False  # True while the panel is mid-refresh
@@ -1091,17 +1174,26 @@ class EInkDisplay:
         with self._init_lock:
             if self._initialized:
                 return
-            logging.info("Initializing e-ink display hardware...")
-            import time
-            from waveshare_epd import epd4in0e
-            start_time = time.monotonic()
+            try:
+                logging.info("Initializing e-ink display hardware...")
+                import time
+                from waveshare_epd import epd4in0e
+                start_time = time.monotonic()
 
-            self.epd = epd4in0e.EPD()
-            self.epd.init()
+                self.epd = epd4in0e.EPD()
+                self.epd.init()
 
-            init_time = time.monotonic() - start_time
-            logging.info(f"E-ink display ready in {init_time:.2f}s")
-            self._initialized = True
+                init_time = time.monotonic() - start_time
+                logging.info(f"E-ink display ready in {init_time:.2f}s")
+                self._initialized = True
+            except Exception as error:
+                logging.error("Display initialization failed: %s", error)
+                update_diagnostics(
+                    "display",
+                    "Display failed to initialize. Check the display connection and SPI.",
+                    "Display initialization failed",
+                )
+                raise
 
     def prepare_async(self):
         """Start e-ink hardware initialization in the background."""
@@ -1116,18 +1208,26 @@ class EInkDisplay:
         """Check if the display is currently in the middle of a refresh cycle."""
         return self._display_busy
 
+    def _fast_refresh_enabled(self):
+        """Snapshot the saved preference before a refresh, never mid-waveform."""
+        try:
+            with open(self.settings_path, 'r') as settings_file:
+                settings = json.load(settings_file)
+            display_settings = settings.get("display", {}) if isinstance(settings, dict) else {}
+            return isinstance(display_settings, dict) and display_settings.get("fast_refresh") is True
+        except (OSError, ValueError):
+            return False
+
     def display_image(self, image):
         """Displays the provided image on the e-ink display."""
-        self._ensure_initialized()  # Initialize only when first used
         buffer = ImageProcessor.img2buffer(image)
-        if buffer:
-            self.epd.display(buffer)
+        self.display_buffer(buffer)
 
     def display_buffer(self, buffer):
         """Send a pre-built display buffer to the e-ink panel (blocking)."""
         self._ensure_initialized()
         if buffer:
-            self.epd.display(buffer)
+            self.epd.display(buffer, fast_refresh=self._fast_refresh_enabled())
 
     def display_buffer_async(self, buffer):
         """Send a pre-built display buffer to the e-ink panel in a background thread.
@@ -1151,11 +1251,17 @@ class EInkDisplay:
                 self._ensure_initialized()
                 logging.info("Display refresh started (background)")
                 refresh_start = time.monotonic()
-                self.epd.display(buffer)
+                self.epd.display(buffer, fast_refresh=self._fast_refresh_enabled())
                 refresh_time = time.monotonic() - refresh_start
                 logging.info(f"Display refresh completed in {refresh_time:.1f}s")
+                update_diagnostics("display", activity="Display refresh completed")
             except Exception as e:
                 logging.error(f"Display refresh error: {e}")
+                update_diagnostics(
+                    "display",
+                    "Display refresh failed. Check the display connection and SPI.",
+                    "Display refresh failed",
+                )
             finally:
                 with self._display_lock:
                     self._display_busy = False
@@ -1210,6 +1316,7 @@ class EInkDisplay:
 
         except Exception as e:
             logging.error(f"Error displaying photo {photo_id}: {e}")
+            update_diagnostics("display", "Display refresh failed", "Display refresh failed")
             return {
                 "success": False,
                 "error": str(e),
@@ -1220,11 +1327,13 @@ class EInkDisplay:
         """Clear the e-ink display."""
         self._ensure_initialized()  # Initialize only when first used
         try:
-            self.epd.Clear()
+            self.epd.Clear(fast_refresh=self._fast_refresh_enabled())
             logging.info("E-ink display cleared")
+            update_diagnostics("display", activity="Display cleared")
             return {"success": True, "message": "Display cleared"}
         except Exception as e:
             logging.error(f"Error clearing display: {e}")
+            update_diagnostics("display", "Display clear failed", "Display clear failed")
             return {"success": False, "error": str(e)}
 
     def display_dashboard_qr(self, access_info):
@@ -1233,6 +1342,7 @@ class EInkDisplay:
             image = render_dashboard_qr_image(access_info)
             self.display_image(image)
             logging.info("Displayed dashboard QR code: %s", access_info.get("primary_url"))
+            update_diagnostics("display", activity="Dashboard QR displayed")
             return {
                 "success": True,
                 "message": "Dashboard QR displayed",
@@ -1240,6 +1350,7 @@ class EInkDisplay:
             }
         except Exception as e:
             logging.error(f"Error displaying dashboard QR: {e}")
+            update_diagnostics("display", "Display refresh failed", "Display refresh failed")
             return {
                 "success": False,
                 "error": str(e),
@@ -1256,7 +1367,7 @@ class CameraSystem:
     """Complete camera system that implements dashboard-like functionality."""
 
     def __init__(self, settings_path="settings.json", eink_display=None):
-        self.eink_display = eink_display if eink_display is not None else EInkDisplay()
+        self.eink_display = eink_display if eink_display is not None else EInkDisplay(settings_path)
         self.camera_manager = CameraManager(settings_path)
         self.file_manager = FileManager(SAVE_PATH, PROCESSED_PATH)
         self.timeout_thread = None
@@ -1418,6 +1529,7 @@ class CameraSystem:
                 capture_time = time.monotonic()
                 logging.info(f"Photo captured successfully: {result['photo_id']} "
                              f"({((capture_time - pipeline_start)*1000):.0f}ms)")
+                update_diagnostics("camera", activity="Photo captured successfully")
 
                 processing_settings = self.camera_manager.settings.get("processing", {})
                 dithered_path = os.path.join(PROCESSED_PATH, f"{result['photo_id']}_dithered.png")
@@ -1455,8 +1567,14 @@ class CameraSystem:
                         logging.info(f"Original JPEG saved: {photo_path}")
                         dithered_image.save(dithered_path, format="PNG")
                         logging.info(f"Dithered PNG saved: {dithered_path}")
+                        update_diagnostics("storage")
                     except Exception as e:
                         logging.error(f"Error saving photo outputs: {e}")
+                        update_diagnostics(
+                            "storage",
+                            "Captured photos could not be saved",
+                            "Photo save failed",
+                        )
 
                 save_thread = threading.Thread(target=_save_outputs, daemon=True)
                 save_thread.start()
@@ -1465,6 +1583,7 @@ class CameraSystem:
 
         except Exception as e:
             logging.error(f"Error in capture_photo_api: {e}")
+            update_diagnostics("camera", "Photo capture failed", "Photo capture failed")
             return {
                 "success": False,
                 "error": str(e),
@@ -1531,7 +1650,8 @@ class CameraSystem:
                     "total_count": original_count
                 },
                 "camera_active": True,
-                "display_active": True
+                "display_active": True,
+                "diagnostics": get_diagnostics(),
             }
         except Exception as e:
             logging.error(f"Error getting system status: {e}")
@@ -1748,8 +1868,8 @@ def _start_api_server_in_background(host: str = "127.0.0.1", port: int = 8077):
 def main():
     global camera_system
 
-    startup_display = EInkDisplay()
     startup_settings_path = os.path.join(BASE_PATH, "settings.json")
+    startup_display = EInkDisplay(startup_settings_path)
     if _auto_display_enabled(startup_settings_path):
         startup_display.prepare_async()
 
@@ -1796,13 +1916,34 @@ def main():
     BUTTON_REGISTER = 0x02
     import smbus2
     bus = smbus2.SMBus(1)
+    button_read_healthy = None
+    last_button_error_log = 0.0
 
     def is_power_button_pressed():
+        nonlocal button_read_healthy, last_button_error_log
         try:
             reg_val = bus.read_byte_data(I2C_ADDRESS, BUTTON_REGISTER)
+            if button_read_healthy is not True:
+                if button_read_healthy is False:
+                    logging.info("Shutter button I2C connection recovered")
+                    update_diagnostics(
+                        "button",
+                        activity="Shutter button connection recovered",
+                    )
+            button_read_healthy = True
             return bool(reg_val & 0x01)  # Check the least significant bit
         except Exception as e:
-            logging.error("Failed to read I2C: %s", e)
+            now = time.monotonic()
+            if button_read_healthy is not False:
+                update_diagnostics(
+                    "button",
+                    "Shutter button is not responding. Check the PiSugar connection and I2C.",
+                    "Shutter button stopped responding",
+                )
+            if button_read_healthy is not False or now - last_button_error_log >= 60:
+                logging.error("Failed to read shutter button over I2C: %s", e)
+                last_button_error_log = now
+            button_read_healthy = False
             return False
 
     prev_state = False
@@ -1828,6 +1969,7 @@ def main():
             if current_state and not prev_state:
                 button_press_start_time = time.monotonic()
                 logging.info("Button pressed - monitoring for long press protection...")
+                update_diagnostics(activity="Button press detected")
 
             # Button released
             elif not current_state and prev_state:
@@ -1839,6 +1981,9 @@ def main():
                         # invisible captures with no visual feedback
                         if camera_system.eink_display.is_busy():
                             logging.info(f"Short press detected ({press_duration:.1f}s) - display busy, ignoring")
+                            update_diagnostics(
+                                activity="Button press ignored while the display was refreshing",
+                            )
                         else:
                             logging.info(f"Short press detected ({press_duration:.1f}s) - capturing photo...")
                             with _operation_lock:
@@ -1849,6 +1994,9 @@ def main():
                                 logging.error("Capture failed: %s", result.get("message", "unknown error"))
                     else:
                         logging.info(f"Long press detected ({press_duration:.1f}s) - ignoring for photo capture")
+                        update_diagnostics(
+                            activity="Long press detected; no photo capture was requested",
+                        )
 
                     button_press_start_time = None
 
@@ -1923,3 +2071,7 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             logging.info("Program interrupted. Exiting...")
             epd4in0e.epdconfig.module_exit(cleanup=True)
+        except Exception as error:
+            logging.exception("Camera service stopped unexpectedly")
+            record_service_failure(error)
+            raise

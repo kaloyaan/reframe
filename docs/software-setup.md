@@ -157,6 +157,10 @@ v4l2-ctl --set-ctrl wide_dynamic_range=0 -d /dev/v4l-subdev0
 
 HDR + autofocus make a big difference on the ePaper display.
 
+## Fast Mode
+
+Under **Settings → Advanced → Screen Refresh**, you can enable **fast mode** for the Spectra 6 display. It uses an undocumented `0x07` clock frequency setting to drive the display, speeding up refresh by about 50%. The choice applies to the next photo without restarting. Fast mode is experimental, long-term panel wear and color accuracy haven't been tested. The default standard speed takes ~21 seconds.
+
 ## Photo Formats And Capture Flow
 
 reFrame captures the startup/button photo into memory first so the image can be dithered and sent to the ePaper display quickly. It then saves files in the background:

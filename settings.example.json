@@ -18,7 +18,8 @@
   },
   "display": {
     "auto_display": true,
-    "display_timeout": 0
+    "display_timeout": 0,
+    "fast_refresh": false
   },
   "system": {
     "auto_refresh_interval": 30,

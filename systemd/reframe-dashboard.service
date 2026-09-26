@@ -1,9 +1,7 @@
 [Unit]
 Description=Reframe Dashboard Service
-# reframe.service uses Type=notify, so this begins after startup capture dispatch.
-After=reframe.service network.target
-Wants=network.target
-Wants=reframe.service
+After=network.target
+Wants=network.target reframe.service
 
 [Service]
 Type=simple

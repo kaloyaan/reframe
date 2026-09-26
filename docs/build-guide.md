@@ -87,7 +87,7 @@ Before starting assembly, make sure you have printed all the necessary enclosure
    - **Hostname**: `reframe`
    - **Username**: `cam`
    - **Password**: your choice (but write it down somewhere safe)
-   - **WiFi**: enter your home network name and password. If you want to use the camera on the go, also add your phone's hotspot (you can add multiple networks)
+   - **WiFi**: enter your home network name and password. If you want to use the camera on the go, you can add your phone's hotspot.
    - **Services**: Enable SSH with password authentication
 4. Write the image and eject the card.
 
