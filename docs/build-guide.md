@@ -87,7 +87,7 @@ Before starting assembly, make sure you have printed all the necessary enclosure
    - **Hostname**: `reframe`
    - **Username**: `cam`
    - **Password**: your choice (but write it down somewhere safe)
-   - **WiFi**: enter your home network name and password. If you want to use the camera on the go, you can add your phone's hotspot.
+   - **WiFi**: enter your home network name and password, or your phone hotspot if you want to use your camera on the go. The Pi Imager only lets you enter one network, but you can add a backup one later during software setup.
    - **Services**: Enable SSH with password authentication
 4. Write the image and eject the card.
 
@@ -218,7 +218,7 @@ Mount the Raspberry Pi Zero 2 W directly onto the PiSugar 3 battery board.
 *Secure the Pi to the PiSugar using the M2.5 screws. Covering the back of the PiSugar with electrical tape helps prevent shorts.*
 
 ### B. Connecting the Camera Ribbon Cable
-Connect the camera ribbon cable to the Pi Zero.
+Connect the camera ribbon cable to the Pi Zero (make sure the Pi is powered off first). The shiny metal contacts face toward the board at both ends: downward on the Pi Zero 2 W, and toward the lens side on the Camera Module 3.
 
 ![Connect Camera Cable](images/build-guide/020-connect-camera-to-pi.jpg)
 *Lift the latch on the Pi Zero camera port, slide the ribbon cable in, and clamp it down securely.*
@@ -233,7 +233,7 @@ Insert your flashed SD Card into the Pi Zero 2 W.
 Fit all the sub-assemblies together inside the enclosure and wire up the remaining connections.
 
 ### A. Fitting the stack in the Case
-Position the main electronics stack inside the 3D-printed enclosure. The Pi 40-pin header should fit into the header on the display.
+Position the main electronics stack inside the 3D-printed enclosure. The Pi 40-pin header should fit into the header on the display. Check that all 40 pins are aligned and seated evenly (not shifted by one pin).
 
 ![Mount Stack in Case](images/build-guide/021-mount-in-case.jpg)
 *Carefully position the Pi/battery stack into the bottom shell.*

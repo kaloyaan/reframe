@@ -16,11 +16,13 @@ required_files=(
     scripts/reframe-apply-update
     scripts/reframe-python
     scripts/reframe-rtc-sync
+    scripts/reframe-wifi-import
     systemd/reframe.service
     systemd/reframe-dashboard.service
     systemd/reframe-dashboard-proxy.service
     systemd/reframe-rtc-restore.service
     systemd/reframe-rtc-update.service
+    systemd/reframe-wifi-import.service
 )
 
 for required in "${required_files[@]}"; do
@@ -40,11 +42,13 @@ runuser -u cam -- env HOME="$CAM_HOME" PYTHONNOUSERSITE=1 "$VENV_PATH/bin/python
 
 install -o root -g root -m 0755 "$REPO_PATH/scripts/reframe-apply-update" /usr/local/sbin/reframe-apply-update
 install -o root -g root -m 0755 "$REPO_PATH/scripts/reframe-rtc-sync" /usr/local/sbin/reframe-rtc-sync
+install -o root -g root -m 0755 "$REPO_PATH/scripts/reframe-wifi-import" /usr/local/sbin/reframe-wifi-import
 install -o root -g root -m 0644 "$REPO_PATH/systemd/reframe.service" /etc/systemd/system/reframe.service
 install -o root -g root -m 0644 "$REPO_PATH/systemd/reframe-dashboard.service" /etc/systemd/system/reframe-dashboard.service
 install -o root -g root -m 0644 "$REPO_PATH/systemd/reframe-dashboard-proxy.service" /etc/systemd/system/reframe-dashboard-proxy.service
 install -o root -g root -m 0644 "$REPO_PATH/systemd/reframe-rtc-restore.service" /etc/systemd/system/reframe-rtc-restore.service
 install -o root -g root -m 0644 "$REPO_PATH/systemd/reframe-rtc-update.service" /etc/systemd/system/reframe-rtc-update.service
+install -o root -g root -m 0644 "$REPO_PATH/systemd/reframe-wifi-import.service" /etc/systemd/system/reframe-wifi-import.service
 install -d -o root -g root -m 0755 /var/lib/reframe
 chmod 0755 "$REPO_PATH/scripts/enable_hdr.sh"
 chmod 0755 "$REPO_PATH/scripts/reframe-python"
@@ -56,6 +60,6 @@ if [ -f /etc/default/pisugar-server ]; then
 fi
 
 systemctl daemon-reload
-systemctl enable reframe-rtc-restore.service reframe-rtc-update.service
+systemctl enable reframe-rtc-restore.service reframe-rtc-update.service reframe-wifi-import.service
 
 echo "Dependencies and service files updated; reboot to run the new code."

@@ -240,13 +240,16 @@ info "Installed software update helper"
 # ── 9. Systemd services ─────────────────────
 step "Installing systemd services"
 
-# Install the PiSugar RTC synchronization helper and services.
+# Install the PiSugar RTC synchronization and SD-card WiFi import helpers.
 sudo install -o root -g root -m 0755 "$SCRIPT_DIR/scripts/reframe-rtc-sync" /usr/local/sbin/reframe-rtc-sync
+sudo install -o root -g root -m 0755 "$SCRIPT_DIR/scripts/reframe-wifi-import" /usr/local/sbin/reframe-wifi-import
 sudo cp "$SCRIPT_DIR/systemd/reframe-rtc-restore.service" /etc/systemd/system/reframe-rtc-restore.service
 sudo cp "$SCRIPT_DIR/systemd/reframe-rtc-update.service" /etc/systemd/system/reframe-rtc-update.service
+sudo cp "$SCRIPT_DIR/systemd/reframe-wifi-import.service" /etc/systemd/system/reframe-wifi-import.service
 sudo chmod 644 \
     /etc/systemd/system/reframe-rtc-restore.service \
-    /etc/systemd/system/reframe-rtc-update.service
+    /etc/systemd/system/reframe-rtc-update.service \
+    /etc/systemd/system/reframe-wifi-import.service
 sudo install -d -o root -g root -m 0755 /var/lib/reframe
 sudo timedatectl set-timezone UTC
 sudo timedatectl set-ntp true
@@ -281,6 +284,7 @@ sudo systemctl enable reframe-dashboard.service
 sudo systemctl enable reframe-dashboard-proxy.service
 sudo systemctl enable reframe-rtc-restore.service
 sudo systemctl enable reframe-rtc-update.service
+sudo systemctl enable reframe-wifi-import.service
 info "Services enabled (will start on boot)"
 
 # ── 10. Boot-speed service trims ─────────────
@@ -310,6 +314,53 @@ sudo systemctl disable --now \
     2>/dev/null || true
 
 info "Disabled unused desktop/modem/Bluetooth/update timer services when present"
+
+# ── 11. Quick camera sanity check ───────────
+step "Checking camera connection"
+CAM_CMD=""
+command -v rpicam-hello >/dev/null 2>&1 && CAM_CMD="rpicam-hello"
+[ -z "$CAM_CMD" ] && command -v libcamera-hello >/dev/null 2>&1 && CAM_CMD="libcamera-hello"
+if [ -n "$CAM_CMD" ]; then
+    if "$CAM_CMD" --list-cameras 2>&1 | grep -q "^[[:space:]]*0 :"; then
+        info "Camera module detected"
+    else
+        warn "No camera detected yet."
+        warn "If the camera is connected, check that the ribbon cable is fully seated"
+        warn "and not flipped upside down at either end (or re-check after reboot)."
+    fi
+fi
+
+# ── 12. Optional backup WiFi ────────────────
+if command -v nmcli >/dev/null 2>&1; then
+    echo ""
+    echo -ne "  Add a backup WiFi network (e.g. phone hotspot)? [y/N] "
+    read -r add_wifi
+    if [[ "$add_wifi" =~ ^[Yy]$ ]]; then
+        echo -ne "  WiFi name (SSID, 2.4 GHz): "
+        read -r wifi_ssid
+        echo -ne "  WiFi password: "
+        read -rs wifi_pass
+        echo ""
+        if [ -n "$wifi_ssid" ]; then
+            sudo nmcli connection delete "$wifi_ssid" >/dev/null 2>&1 || true
+            if [ -n "$wifi_pass" ]; then
+                if sudo nmcli connection add type wifi ifname wlan0 con-name "$wifi_ssid" ssid "$wifi_ssid" \
+                    wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$wifi_pass" connection.autoconnect yes >/dev/null; then
+                    info "Saved backup WiFi network '$wifi_ssid'"
+                else
+                    warn "Could not save backup WiFi network '$wifi_ssid'"
+                fi
+            else
+                if sudo nmcli connection add type wifi ifname wlan0 con-name "$wifi_ssid" ssid "$wifi_ssid" \
+                    connection.autoconnect yes >/dev/null; then
+                    info "Saved open backup WiFi network '$wifi_ssid'"
+                else
+                    warn "Could not save backup WiFi network '$wifi_ssid'"
+                fi
+            fi
+        fi
+    fi
+fi
 
 # ── Done ────────────────────────────────────
 echo ""

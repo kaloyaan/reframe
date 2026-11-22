@@ -11,7 +11,7 @@ Download and install [Raspberry Pi Imager](https://www.raspberrypi.com/software/
 - **Hostname:** `reframe`
 - **Username:** `cam`
 - **Password:** your choice (but write it down somewhere safe)
-- **WiFi:** enter your home network name and password. If you want to use the camera on the go, also add your phone's hotspot (you can add multiple networks)
+- **WiFi:** enter your home network name and password, and set your wireless network country. The Pi Imager only accepts one network but when you run the install script later it will offer to save a second network (such as your phone's hotspot).
 - **Services:** Enable SSH with password authentication
 
 Eject the card, insert it into the Pi Zero 2 W, and power it on. On a new
@@ -135,7 +135,14 @@ Advanced export settings include an optional 2× dithered-image mode. When enabl
 
 ### Using with a Phone Hotspot
 
-To use the camera without a WiFi network, enable your phone's hotspot. As long as you added the hotspot name and password during flashing (step 1), the Pi will connect to it automatically on boot.
+To control the camera when you're on the go, save your phone's hotspot as a backup network (either when prompted by `install.sh`, or anytime over SSH):
+
+```bash
+sudo nmcli connection add type wifi ifname wlan0 con-name "MyHotspot" ssid "MyHotspot" \
+    wifi-sec.key-mgmt wpa-psk wifi-sec.psk "your-password" connection.autoconnect yes
+```
+
+Once saved, the Pi will connect to your hotspot automatically on boot whenever it's enabled.
 
 On iPhone, you can find your hotspot name under Settings → General → About → Name. Enable **Maximize Compatibility** in hotspot settings for the Pi to connect reliably.
 
@@ -320,6 +327,7 @@ Do **not** disable these for the normal camera build:
 
 ```bash
 ssh.service
+NetworkManager.service
 wpa_supplicant.service
 dhcpcd.service
 avahi-daemon.service
@@ -342,13 +350,21 @@ sudo systemctl enable --now bluetooth.service hciuart.service
 ## Troubleshooting
 
 **Camera not detected**
-- Verify the ribbon cable is seated properly on both ends
-- Ensure `cam` is in the `video` group: `groups cam`
+- If the camera is not detected at boot, reFrame displays a "Camera not detected" screen on the ePaper display
+- Power off the Pi and check the ribbon cable at both ends: the shiny metal contacts face toward the board (downward on the Pi Zero 2 W, and toward the lens side on the Camera Module 3)
+- Test detection over SSH: `rpicam-hello --list-cameras`
 
 **Display not updating**
 - Confirm SPI is enabled: `sudo raspi-config nonint get_spi` (should return `0`)
-- Check physical connections between the display HAT and Pi header
-- Review logs: `sudo journalctl -u reframe.service`
+- Check that the 40-pin header is seated evenly (not shifted by a pin) and the display's FPC ribbon on the back of the Waveshare HAT is fully seated
+- Review logs (`sudo journalctl -u reframe.service -b`):
+  - `finished too fast` (`BUSY` stayed idle) usually means SPI commands or power are not reaching the panel
+  - `timed out waiting for BUSY pin` means `BUSY` is stuck low — recheck HAT seating, power, and the FPC ribbon
+
+**Pi won't connect to WiFi / `reframe.local` not found**
+- If the dashboard QR code appeared on the ePaper display, try the numeric IP shown there (or check your router's connected devices list and use `http://<ip>` / `ssh cam@<ip>`)
+- Pi Zero 2 W only supports 2.4 GHz WiFi, and some mesh routers can block reconnections; testing with a phone hotspot (with Maximize Compatibility enabled on iPhone) quickly isolates router vs. Pi issues
+- To add or update WiFi without SSH: insert the microSD card into a Mac or PC, open the `bootfs` drive, and create a plain text file named `reframe-wifi.txt` with your WiFi name on line 1 and password on line 2. Eject and boot the Pi — reFrame imports the network automatically and deletes `reframe-wifi.txt`
 
 **Button not responding**
 - Confirm I2C is enabled: `sudo raspi-config nonint get_i2c` (should return `0`)

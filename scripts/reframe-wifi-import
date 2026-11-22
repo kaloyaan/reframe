@@ -1,0 +1,38 @@
+#!/bin/bash
+set -eu
+
+WIFI_FILE=""
+for candidate in /boot/firmware/reframe-wifi.txt /boot/reframe-wifi.txt; do
+    if [ -f "$candidate" ]; then
+        WIFI_FILE="$candidate"
+        break
+    fi
+done
+
+[ -n "$WIFI_FILE" ] || exit 0
+if ! command -v nmcli >/dev/null 2>&1 || ! systemctl is-active --quiet NetworkManager; then
+    echo "NetworkManager not active; skipping WiFi import" >&2
+    exit 0
+fi
+
+SSID="$(sed -n '1p' "$WIFI_FILE" | tr -d '\r')"
+PASS="$(sed -n '2p' "$WIFI_FILE" | tr -d '\r')"
+
+if [ -z "$SSID" ]; then
+    echo "reframe-wifi.txt is empty; removing" >&2
+    rm -f "$WIFI_FILE"
+    exit 0
+fi
+
+nmcli connection delete "$SSID" >/dev/null 2>&1 || true
+if [ -n "$PASS" ]; then
+    nmcli connection add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID" \
+        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PASS" connection.autoconnect yes >/dev/null
+else
+    nmcli connection add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID" \
+        connection.autoconnect yes >/dev/null
+fi
+
+rm -f "$WIFI_FILE"
+echo "Imported WiFi network '$SSID' from bootfs"
+nmcli connection up "$SSID" >/dev/null 2>&1 || true

@@ -1,0 +1,12 @@
+[Unit]
+Description=Import WiFi credentials from bootfs reframe-wifi.txt if present
+After=NetworkManager.service reframe.service
+ConditionPathExists=|/boot/firmware/reframe-wifi.txt
+ConditionPathExists=|/boot/reframe-wifi.txt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reframe-wifi-import
+
+[Install]
+WantedBy=multi-user.target
