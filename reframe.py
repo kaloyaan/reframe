@@ -59,6 +59,8 @@ def _lazy_import_fastapi():
 
 import threading
 import time
+import struct
+from datetime import datetime, timedelta, timezone
 
 # ═══════════════════════════════════════════════════════════════════
 # HARDWARE: Display — defaults to Waveshare 4" ePaper Spectra 6
@@ -333,6 +335,7 @@ class CameraManager:
         self.settings_path = settings_path
         self.settings = self.load_settings()
         self.picam2 = Picamera2()
+        self.camera_model = str((getattr(self.picam2, "camera_properties", None) or {}).get("Model") or "unknown")
         self.last_activity_monotonic = time.monotonic()
         self._has_captured = False  # Track if we've taken at least one photo (for adaptive AF)
         self.configure_camera()
@@ -445,13 +448,14 @@ class CameraManager:
             file_path = file_manager.get_new_file_path(SAVE_PATH, ORIGINAL_CAPTURE_EXTENSION)
 
         try:
-            image = self.capture_image(fast_mode=fast_mode)
+            image, capture_metadata = self.capture_image_and_metadata(fast_mode=fast_mode)
             return {
                 "success": True,
                 "photo_id": os.path.splitext(os.path.basename(file_path))[0],
                 "original_path": file_path,
                 "processed_path": None,
                 "file_size": None,
+                "capture_metadata": capture_metadata,
                 "message": "Photo captured successfully"
             }, image
         except Exception as e:
@@ -556,10 +560,39 @@ class CameraManager:
 
     def capture_image(self, fast_mode=False):
         """Capture a photo into memory as a PIL image."""
-        self._settle_autofocus(fast_mode)
-        image = self.picam2.capture_image("main")
-        logging.info("Photo captured to memory")
+        image, _ = self.capture_image_and_metadata(fast_mode=fast_mode)
         return image
+
+    def capture_image_and_metadata(self, fast_mode=False):
+        """Capture a PIL image and camera metadata for EXIF tagging."""
+        self._settle_autofocus(fast_mode)
+        frame_meta = {}
+        if hasattr(self.picam2, "capture_request"):
+            request = self.picam2.capture_request()
+            try:
+                image = request.make_image("main")
+                frame_meta = request.get_metadata() or {}
+            finally:
+                request.release()
+        else:
+            image = self.picam2.capture_image("main")
+
+        exp_us = frame_meta.get("ExposureTime")
+        a_gain = frame_meta.get("AnalogueGain")
+        d_gain = frame_meta.get("DigitalGain", 1.0)
+        ev = self.settings.get("camera", {}).get("exposure_value")
+        gain = (a_gain * (d_gain if isinstance(d_gain, (int, float)) and d_gain > 0 else 1.0)) if isinstance(a_gain, (int, float)) and a_gain > 0 else None
+
+        capture_metadata = {
+            "captured_at": datetime.now(timezone.utc),
+            "capture_monotonic": time.monotonic(),
+            "camera_model": self.camera_model,
+            "exposure_time_s": exp_us / 1_000_000.0 if isinstance(exp_us, (int, float)) and exp_us > 0 else None,
+            "iso": max(1, int(round(gain * 100))) if gain is not None else None,
+            "exposure_bias": float(ev) if isinstance(ev, (int, float)) else None,
+        }
+        logging.info("Photo captured to memory")
+        return image, capture_metadata
 
     def _settle_autofocus(self, fast_mode=False):
         """Give autofocus a short settle window before capture."""
@@ -952,13 +985,128 @@ class ImageProcessor:
         return buf
 
     @staticmethod
+    def build_exif_bytes(capture_metadata=None, processing_settings=None, base_exif=None):
+        """Build EXIF bytes; dithering info is written only when processing_settings is passed."""
+        Image, _ = _lazy_import_pil()
+        exif = Image.Exif()
+        exif_ifd = {}
+
+        if base_exif is not None:
+            for tag in (0x010F, 0x0110, 0x0131, 0x0132):
+                if tag in base_exif:
+                    exif[tag] = base_exif[tag]
+            try:
+                base_sub = base_exif.get_ifd(0x8769)
+                for tag in (0x9003, 0x9004, 0x9010, 0x9011, 0x9012, 0x829A, 0x8827, 0x9204):
+                    if tag in base_sub:
+                        exif_ifd[tag] = base_sub[tag]
+            except Exception:
+                pass
+
+        meta = capture_metadata or {}
+        exif.setdefault(0x010F, "reFrame")
+        if meta.get("camera_model"):
+            exif[0x0110] = str(meta["camera_model"])
+        exif.setdefault(0x0131, "reFrame")
+
+        captured_at = meta.get("captured_at")
+        if isinstance(captured_at, datetime):
+            dt = captured_at.astimezone(timezone.utc).strftime("%Y:%m:%d %H:%M:%S")
+            exif[0x0132] = dt
+            exif_ifd.update({0x9003: dt, 0x9004: dt, 0x9010: "+00:00", 0x9011: "+00:00", 0x9012: "+00:00"})
+
+        for key, tag, cast in (("exposure_time_s", 0x829A, float), ("iso", 0x8827, int), ("exposure_bias", 0x9204, float)):
+            if meta.get(key) is not None:
+                exif_ifd[tag] = cast(meta[key])
+
+        if isinstance(processing_settings, dict):
+            method = processing_settings.get("dithering_method", "floyd_steinberg")
+            sat = processing_settings.get("saturation", 0.6)
+            bright = processing_settings.get("brightness_factor", 1.1)
+            color = processing_settings.get("color_factor", 1.4)
+            if method == "ordered":
+                bayer = processing_settings.get("bayer_size", 4)
+                scale = processing_settings.get("threshold_scale", 1.0)
+                exif[0x010E] = f"Ordered {bayer}x{bayer} (sat {sat}, bright {bright}, color {color}, scale {scale})"
+            else:
+                exif[0x010E] = f"Floyd-Steinberg (sat {sat}, bright {bright}, color {color})"
+
+        if exif_ifd:
+            exif[0x8769] = exif_ifd
+        return exif.tobytes()
+
+    @staticmethod
+    def patch_jpeg_exif_lossless(jpeg_path, exif_bytes):
+        """Replace/insert the JPEG APP1 EXIF segment without re-encoding."""
+        if not exif_bytes or not os.path.exists(jpeg_path):
+            return False
+        with open(jpeg_path, "rb") as f:
+            data = f.read()
+        if len(data) < 4 or data[:2] != b"\xff\xd8":
+            return False
+
+        app1 = b"\xff\xe1" + struct.pack(">H", len(exif_bytes) + 2) + exif_bytes
+        out, pos, inserted = bytearray(b"\xff\xd8"), 2, False
+        while pos + 4 <= len(data) and data[pos] == 0xFF:
+            marker = data[pos + 1]
+            if marker in (0xDA, 0xD9):
+                break
+            if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+                out.extend(data[pos:pos + 2])
+                pos += 2
+                continue
+            seg_len = struct.unpack(">H", data[pos + 2:pos + 4])[0]
+            seg_end = pos + 2 + seg_len
+            if seg_len < 2 or seg_end > len(data):
+                break
+            if marker == 0xE1 and data[pos + 4:seg_end].startswith(b"Exif\x00\x00"):
+                pos = seg_end
+                continue
+            if marker == 0xE0 and not inserted:
+                out.extend(data[pos:seg_end])
+                out.extend(app1)
+                inserted = True
+            else:
+                if not inserted:
+                    out.extend(app1)
+                    inserted = True
+                out.extend(data[pos:seg_end])
+            pos = seg_end
+
+        if not inserted:
+            out.extend(app1)
+        out.extend(data[pos:])
+        tmp_path = f"{jpeg_path}.exif.tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(out)
+        os.replace(tmp_path, jpeg_path)
+        return True
+
+    @staticmethod
+    def patch_png_exif(png_path, exif_bytes):
+        """Update PNG EXIF metadata losslessly."""
+        if not exif_bytes or not os.path.exists(png_path):
+            return False
+        Image, _ = _lazy_import_pil()
+        tmp_path = f"{png_path}.exif.tmp"
+        with Image.open(png_path) as img:
+            img.save(tmp_path, format="PNG", exif=exif_bytes)
+        os.replace(tmp_path, png_path)
+        return True
+
+    @staticmethod
     def process_photo_with_settings(original_path, output_path, processing_settings):
         """Process a photo with specific settings and save it."""
         try:
             Image, ImageEnhance = _lazy_import_pil()
 
-            # Load original image
+            # Load original image and preserve its EXIF metadata
             original_image = Image.open(original_path)
+            base_exif = None
+            try:
+                base_exif = original_image.getexif()
+            except Exception:
+                base_exif = None
 
             # Resize image
             resized_image = ImageProcessor.resize_image(original_image)
@@ -974,8 +1122,12 @@ class ImageProcessor:
                 threshold_scale=processing_settings.get("threshold_scale", 1.0)
             )
 
-            # Save processed image as PNG (keep palette if present)
-            dithered_image.save(output_path, format="PNG")
+            # Save processed image as PNG (keep palette if present) with EXIF
+            dithered_exif = ImageProcessor.build_exif_bytes(
+                processing_settings=processing_settings,
+                base_exif=base_exif,
+            )
+            dithered_image.save(output_path, format="PNG", exif=dithered_exif)
             logging.info(f"Processed image saved to {output_path}")
 
             return {
@@ -1553,7 +1705,36 @@ class CameraSystem:
                 logging.warning(f"Dashboard QR monitor error: {e}")
             time.sleep(5)
 
-    def capture_photo_api(self, fast_mode=False):
+    def _schedule_startup_rtc_exif_backfill(self, photo_path, dithered_path, capture_metadata, processing_settings, save_done_event):
+        """Backfill startup photo EXIF timestamps once post-boot RTC sync steps the clock."""
+        if not capture_metadata or "capture_monotonic" not in capture_metadata:
+            return
+        baseline_wall, baseline_mono = time.time(), time.monotonic()
+
+        def _watch():
+            deadline = baseline_mono + 35.0
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                if abs((time.time() - baseline_wall) - (time.monotonic() - baseline_mono)) > 5.0:
+                    save_done_event.wait(timeout=15.0)
+                    try:
+                        elapsed = max(0.0, time.monotonic() - capture_metadata["capture_monotonic"])
+                        true_at = datetime.now(timezone.utc) - timedelta(seconds=elapsed)
+                        updated = {**capture_metadata, "captured_at": true_at}
+                        ImageProcessor.patch_jpeg_exif_lossless(photo_path, ImageProcessor.build_exif_bytes(updated))
+                        ImageProcessor.patch_png_exif(dithered_path, ImageProcessor.build_exif_bytes(updated, processing_settings))
+                        ts = true_at.timestamp()
+                        for path in (photo_path, dithered_path):
+                            if os.path.exists(path):
+                                os.utime(path, (ts, ts))
+                        logging.info("Backfilled startup photo EXIF after clock sync: %s", true_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
+                    except Exception as e:
+                        logging.warning("Failed to backfill startup photo EXIF: %s", e)
+                    return
+
+        threading.Thread(target=_watch, daemon=True).start()
+
+    def capture_photo_api(self, fast_mode=False, backfill_on_clock_sync=False):
         """API-style photo capture with optimized display pipeline.
 
         Pipeline: capture to memory → dither+buffer → async display → background file save.
@@ -1578,7 +1759,8 @@ class CameraSystem:
                              f"({((capture_time - pipeline_start)*1000):.0f}ms)")
                 update_diagnostics("camera", activity="Photo captured successfully")
 
-                processing_settings = self.camera_manager.settings.get("processing", {})
+                processing_settings = dict(self.camera_manager.settings.get("processing", {}))
+                capture_metadata = result.pop("capture_metadata", None)
                 dithered_path = os.path.join(PROCESSED_PATH, f"{result['photo_id']}_dithered.png")
 
                 resized_image = ImageProcessor.resize_image(original_image)
@@ -1607,12 +1789,21 @@ class CameraSystem:
 
                 # Save files in background after the display refresh has been dispatched.
                 result["processed_path"] = dithered_path
+                save_done_event = threading.Event()
                 def _save_outputs():
                     try:
-                        original_image.save(photo_path, format="JPEG")
+                        jpg_exif = ImageProcessor.build_exif_bytes(
+                            capture_metadata=capture_metadata,
+                            processing_settings=None,
+                        )
+                        png_exif = ImageProcessor.build_exif_bytes(
+                            capture_metadata=capture_metadata,
+                            processing_settings=processing_settings,
+                        )
+                        original_image.save(photo_path, format="JPEG", exif=jpg_exif)
                         result["file_size"] = os.path.getsize(photo_path)
                         logging.info(f"Original JPEG saved: {photo_path}")
-                        dithered_image.save(dithered_path, format="PNG")
+                        dithered_image.save(dithered_path, format="PNG", exif=png_exif)
                         logging.info(f"Dithered PNG saved: {dithered_path}")
                         update_diagnostics("storage")
                     except Exception as e:
@@ -1622,9 +1813,20 @@ class CameraSystem:
                             "Captured photos could not be saved",
                             "Photo save failed",
                         )
+                    finally:
+                        save_done_event.set()
 
                 save_thread = threading.Thread(target=_save_outputs, daemon=True)
                 save_thread.start()
+
+                if backfill_on_clock_sync:
+                    self._schedule_startup_rtc_exif_backfill(
+                        photo_path,
+                        dithered_path,
+                        capture_metadata,
+                        processing_settings,
+                        save_done_event,
+                    )
 
             return result
 
