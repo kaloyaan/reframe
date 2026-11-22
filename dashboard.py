@@ -206,6 +206,7 @@ def validate_settings(settings: Dict[str, Any]) -> None:
     integer(system.get("auto_refresh_interval"), "system.auto_refresh_interval", 5, 300)
     integer(system.get("auto_timeout_minutes"), "system.auto_timeout_minutes", 1, 60)
     boolean(system.get("auto_timeout_enabled"), "system.auto_timeout_enabled")
+    boolean(system.get("capture_on_startup", True), "system.capture_on_startup")
     boolean(system.get("show_dashboard_qr_on_wifi_connect"), "system.show_dashboard_qr_on_wifi_connect")
     text(system.get("camera_name", ""), "system.camera_name", 80)
 
@@ -247,6 +248,7 @@ class SettingsManager:
                 "auto_refresh_interval": 30,
                 "auto_timeout_minutes": 10,
                 "auto_timeout_enabled": True,
+                "capture_on_startup": True,
                 "show_dashboard_qr_on_wifi_connect": True,
                 "camera_name": ""
             },
@@ -1803,6 +1805,16 @@ async def dashboard():
                     </div>
                     <div class="setting-group">
                         <div>
+                            <span class="setting-label">take photo on startup</span>
+                            <select id="capture-on-startup" class="setting-input">
+                                <option value="true">enabled</option>
+                                <option value="false">disabled</option>
+                            </select>
+                        </div>
+                        <div class="setting-help">Automatically captures and displays a photo when the camera powers on.</div>
+                    </div>
+                    <div class="setting-group">
+                        <div>
                             <span class="setting-label">dashboard QR on Wi-Fi connect</span>
                             <select id="show-dashboard-qr-on-wifi-connect" class="setting-input">
                                 <option value="true">enabled</option>
@@ -2496,6 +2508,7 @@ async def dashboard():
                 document.getElementById('auto-refresh-interval').value = settings.system.auto_refresh_interval;
                 document.getElementById('auto-timeout-enabled').value = settings.system.auto_timeout_enabled ? 'true' : 'false';
                 document.getElementById('auto-timeout-minutes').value = settings.system.auto_timeout_minutes || 10;
+                document.getElementById('capture-on-startup').value = settings.system.capture_on_startup !== false ? 'true' : 'false';
                 document.getElementById('show-dashboard-qr-on-wifi-connect').value = settings.system.show_dashboard_qr_on_wifi_connect !== false ? 'true' : 'false';
                 const exportSettings = settings.exports || {};
                 document.getElementById('upscale-dithered-2x').value = exportSettings.upscale_dithered_2x ? 'true' : 'false';
@@ -2626,6 +2639,7 @@ async def dashboard():
                             auto_refresh_interval: parseInt(document.getElementById('auto-refresh-interval').value),
                             auto_timeout_enabled: document.getElementById('auto-timeout-enabled').value === 'true',
                             auto_timeout_minutes: parseInt(document.getElementById('auto-timeout-minutes').value),
+                            capture_on_startup: document.getElementById('capture-on-startup').value === 'true',
                             show_dashboard_qr_on_wifi_connect: document.getElementById('show-dashboard-qr-on-wifi-connect').value === 'true'
                         },
                         exports: {
@@ -2692,6 +2706,7 @@ async def dashboard():
                                 auto_refresh_interval: 30,
                                 auto_timeout_enabled: true,
                                 auto_timeout_minutes: 10,
+                                capture_on_startup: true,
                                 show_dashboard_qr_on_wifi_connect: true
                             },
                             exports: {

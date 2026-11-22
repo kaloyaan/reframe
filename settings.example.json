@@ -25,6 +25,7 @@
     "auto_refresh_interval": 30,
     "auto_timeout_minutes": 10,
     "auto_timeout_enabled": true,
+    "capture_on_startup": true,
     "show_dashboard_qr_on_wifi_connect": true,
     "camera_name": ""
   },

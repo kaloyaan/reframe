@@ -137,17 +137,25 @@ def get_diagnostics():
         return json.loads(json.dumps(_diagnostics))
 
 
+_CAMERA_ERROR_MARKERS = (
+    "no cameras available",
+    "camera __init__ sequence did not complete",
+    "failed to acquire camera",
+    "pipeline handler",
+    "libcamera",
+)
+
+
+def _is_camera_init_error(error):
+    lowered = str(error).lower()
+    return any(marker in lowered for marker in _CAMERA_ERROR_MARKERS)
+
+
 def record_service_failure(error):
     """Classify common startup failures into useful physical checks."""
     lowered = str(error).lower()
 
-    if any(marker in lowered for marker in (
-        "no cameras available",
-        "camera __init__ sequence did not complete",
-        "failed to acquire camera",
-        "pipeline handler",
-        "libcamera",
-    )):
+    if _is_camera_init_error(error):
         component = "camera"
         message = (
             "Camera not detected. Check that the ribbon cable is fully seated "
@@ -321,6 +329,64 @@ def render_dashboard_qr_image(access_info):
 
     return canvas
 
+def render_camera_error_image():
+    """Render a minimal centered camera-not-detected screen for the ePaper display."""
+    Image, _ = _lazy_import_pil()
+    from PIL import ImageDraw, ImageFont
+
+    font = ImageFont.load_default()
+    w, h = DISPLAY_IMAGE_WIDTH // 2, DISPLAY_IMAGE_HEIGHT // 2
+    canvas = Image.new("RGB", (w, h), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    lines = [
+        ("Camera not detected", "red"),
+        ("", "black"),
+        ("Check the camera ribbon cable:", "black"),
+        ("1. Power off before touching cables.", "black"),
+        ("2. Reseat both ends (Pi and camera).", "black"),
+        ("3. Make sure the ribbon is not flipped.", "black"),
+    ]
+    line_height = 16
+    y = (h - len(lines) * line_height) // 2
+
+    for text, color in lines:
+        if text:
+            try:
+                left, _, right, _ = draw.textbbox((0, 0), text, font=font)
+                width = right - left
+            except (AttributeError, TypeError):
+                width = draw.textsize(text, font=font)[0]
+            draw.text(((w - width) // 2, y), text, fill=color, font=font)
+        y += line_height
+    return canvas.resize(DISPLAY_IMAGE_SIZE, Image.NEAREST)
+
+
+def _show_camera_error_once_per_boot(display):
+    """Display the camera ribbon error card at most once per boot."""
+    marker_path = os.path.join(RUNTIME_PATH, "camera_error_boot_id")
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8") as f:
+            boot_id = f.read().strip()
+    except OSError:
+        boot_id = "unknown"
+
+    try:
+        if os.path.exists(marker_path):
+            with open(marker_path, "r", encoding="utf-8") as f:
+                if f.read().strip() == boot_id:
+                    return
+    except OSError:
+        pass
+
+    try:
+        display.display_image(render_camera_error_image())
+        with open(marker_path, "w", encoding="utf-8") as f:
+            f.write(boot_id)
+    except Exception as e:
+        logging.warning("Could not display camera error screen: %s", e)
+
+
 class CameraManager:
     """Picamera2 camera adapter.
 
@@ -372,6 +438,7 @@ class CameraManager:
                     "auto_refresh_interval": 30,
                     "auto_timeout_minutes": 10,
                     "auto_timeout_enabled": True,
+                    "capture_on_startup": True,
                     "show_dashboard_qr_on_wifi_connect": True
                 }
             }
@@ -2126,28 +2193,42 @@ def main():
     # boot wait for the camera subdevice. HDR is still applied before the
     # Picamera2 constructor opens the camera.
     _enable_camera_hdr()
-    camera_system = CameraSystem(eink_display=startup_display)
-    logging.info("Camera system initialized")
-    logging.info("Taking startup photo...")
-    startup_status = "Camera initialized; startup capture failed"
     try:
-        with _operation_lock:
-            result = camera_system.capture_photo_api(fast_mode=True)
+        camera_system = CameraSystem(eink_display=startup_display)
+    except Exception as error:
+        if _is_camera_init_error(error):
+            _show_camera_error_once_per_boot(startup_display)
+        raise
+    try:
+        os.remove(os.path.join(RUNTIME_PATH, "camera_error_boot_id"))
+    except OSError:
+        pass
+    logging.info("Camera system initialized")
+    capture_on_startup = camera_system.camera_manager.settings.get("system", {}).get("capture_on_startup", True)
+    startup_status = "Camera ready"
+    try:
+        if capture_on_startup:
+            logging.info("Taking startup photo...")
+            startup_status = "Camera initialized; startup capture failed"
+            with _operation_lock:
+                result = camera_system.capture_photo_api(fast_mode=True, backfill_on_clock_sync=True)
 
-        if result.get("success"):
-            logging.info("Startup photo captured: %s", result.get("photo_id", "unknown"))
-            if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True):
-                logging.info("Startup photo sent to display")
-            logging.info("System ready")
-            startup_status = "Startup photo dispatched"
-
-            # Ensure activity time is updated before starting timeout monitor
-            camera_system.update_activity()
-            camera_system.start_timeout_monitor_deferred()
+            if result.get("success"):
+                logging.info("Startup photo captured: %s", result.get("photo_id", "unknown"))
+                if camera_system.camera_manager.settings.get("display", {}).get("auto_display", True):
+                    logging.info("Startup photo sent to display")
+                logging.info("System ready")
+                startup_status = "Startup photo dispatched"
+            else:
+                logging.warning("Failed to capture startup photo: %s", result.get("message", "unknown error"))
         else:
-            logging.warning("Failed to capture startup photo: %s", result.get("message", "unknown error"))
+            logging.info("Startup photo skipped (capture_on_startup is disabled)")
+            startup_status = "Camera ready (startup capture disabled)"
+
+        camera_system.update_activity()
+        camera_system.start_timeout_monitor_deferred()
     except Exception as e:
-        logging.error("Error taking startup photo: %s", e)
+        logging.error("Error during startup: %s", e)
     finally:
         # reframe.service is Type=notify. Dashboard startup waits for this, but
         # does not wait for the e-ink panel's long physical refresh.
