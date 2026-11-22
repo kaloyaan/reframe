@@ -1157,6 +1157,9 @@ class FileManager:
 class EInkDisplay:
     """Waveshare ePaper display adapter with lazy initialization."""
 
+    MIN_PLAUSIBLE_REFRESH_SECONDS = 2.0
+    MIN_PLAUSIBLE_BUSY_SECONDS = 0.5
+
     def __init__(self, settings_path="settings.json"):
         # Don't initialize e-ink hardware at startup — takes 5-10s
         self.settings_path = settings_path
@@ -1181,18 +1184,15 @@ class EInkDisplay:
                 start_time = time.monotonic()
 
                 self.epd = epd4in0e.EPD()
-                self.epd.init()
+                init_result = self.epd.init()
+                if init_result != 0:
+                    raise RuntimeError(f"e-ink driver init() returned {init_result}")
 
                 init_time = time.monotonic() - start_time
                 logging.info(f"E-ink display ready in {init_time:.2f}s")
                 self._initialized = True
             except Exception as error:
-                logging.error("Display initialization failed: %s", error)
-                update_diagnostics(
-                    "display",
-                    "Display failed to initialize. Check the display connection and SPI.",
-                    "Display initialization failed",
-                )
+                self._record_display_error(error, "Display initialization")
                 raise
 
     def prepare_async(self):
@@ -1218,16 +1218,60 @@ class EInkDisplay:
         except (OSError, ValueError):
             return False
 
+    def _record_display_error(self, error, operation="Display refresh"):
+        """Log a display error and update diagnostics."""
+        if isinstance(error, TimeoutError):
+            logging.error("%s timed out: %s", operation, error)
+            update_diagnostics(
+                "display",
+                "Display timed out waiting for BUSY pin. Check the ribbon cable, HAT power, and SPI.",
+                f"{operation} timed out",
+            )
+        else:
+            logging.error("%s failed: %s", operation, error)
+            update_diagnostics(
+                "display",
+                f"{operation} failed. Check the display connection and SPI.",
+                f"{operation} failed",
+            )
+
+    def _check_refresh_health(self, refresh_time, operation="Display refresh"):
+        """Confirm BUSY was held long enough for a real Spectra 6 refresh."""
+        busy_s = getattr(self.epd, "last_refresh_busy_s", None)
+        if refresh_time < self.MIN_PLAUSIBLE_REFRESH_SECONDS or (
+            busy_s is not None and busy_s < self.MIN_PLAUSIBLE_BUSY_SECONDS
+        ):
+            logging.warning(
+                "%s finished too fast (total=%.2fs, busy=%s) — check FPC ribbon, HAT switches, power, and SPI.",
+                operation,
+                refresh_time,
+                f"{busy_s:.2f}s" if busy_s is not None else "n/a",
+            )
+            update_diagnostics(
+                "display",
+                "Display did not report a refresh cycle (BUSY stayed idle). Check the FPC ribbon cable, HAT switches, power, and SPI.",
+                f"{operation} may not have reached the panel",
+            )
+            return False
+
+        logging.info("%s completed in %.1fs (busy=%.1fs)", operation, refresh_time, busy_s if busy_s is not None else refresh_time)
+        update_diagnostics("display", activity=f"{operation} completed")
+        return True
+
     def display_image(self, image):
         """Displays the provided image on the e-ink display."""
         buffer = ImageProcessor.img2buffer(image)
-        self.display_buffer(buffer)
+        return self.display_buffer(buffer)
 
     def display_buffer(self, buffer):
         """Send a pre-built display buffer to the e-ink panel (blocking)."""
         self._ensure_initialized()
         if buffer:
+            refresh_start = time.monotonic()
             self.epd.display(buffer, fast_refresh=self._fast_refresh_enabled())
+            refresh_time = time.monotonic() - refresh_start
+            return self._check_refresh_health(refresh_time, operation="Display refresh")
+        return False
 
     def display_buffer_async(self, buffer):
         """Send a pre-built display buffer to the e-ink panel in a background thread.
@@ -1253,15 +1297,9 @@ class EInkDisplay:
                 refresh_start = time.monotonic()
                 self.epd.display(buffer, fast_refresh=self._fast_refresh_enabled())
                 refresh_time = time.monotonic() - refresh_start
-                logging.info(f"Display refresh completed in {refresh_time:.1f}s")
-                update_diagnostics("display", activity="Display refresh completed")
+                self._check_refresh_health(refresh_time, operation="Display refresh")
             except Exception as e:
-                logging.error(f"Display refresh error: {e}")
-                update_diagnostics(
-                    "display",
-                    "Display refresh failed. Check the display connection and SPI.",
-                    "Display refresh failed",
-                )
+                self._record_display_error(e, "Display refresh")
             finally:
                 with self._display_lock:
                     self._display_busy = False
@@ -1297,12 +1335,22 @@ class EInkDisplay:
                 resized_image = ImageProcessor.resize_image(image)
                 # Use default processing settings for display
                 display_image = ImageProcessor.apply_dithering(resized_image)
-                self.display_image(display_image)
+                healthy = self.display_image(display_image)
             else:
                 # Dithered image can be displayed directly (just resize if needed)
                 if image.size != DISPLAY_IMAGE_SIZE:
                     image = ImageProcessor.resize_image(image)
-                self.display_image(image)
+                healthy = self.display_image(image)
+
+            if not healthy:
+                return {
+                    "success": False,
+                    "photo_id": photo_id,
+                    "version_displayed": version,
+                    "image_path": image_path,
+                    "error": "Display did not report a refresh cycle (BUSY stayed idle)",
+                    "message": "Display did not respond to refresh. Check the FPC ribbon cable, HAT switches, power, and SPI."
+                }
 
             logging.info(f"Displayed {version} version of photo {photo_id} on e-ink screen")
 
@@ -1315,8 +1363,7 @@ class EInkDisplay:
             }
 
         except Exception as e:
-            logging.error(f"Error displaying photo {photo_id}: {e}")
-            update_diagnostics("display", "Display refresh failed", "Display refresh failed")
+            self._record_display_error(e, "Display refresh")
             return {
                 "success": False,
                 "error": str(e),
@@ -1327,13 +1374,13 @@ class EInkDisplay:
         """Clear the e-ink display."""
         self._ensure_initialized()  # Initialize only when first used
         try:
+            refresh_start = time.monotonic()
             self.epd.Clear(fast_refresh=self._fast_refresh_enabled())
-            logging.info("E-ink display cleared")
-            update_diagnostics("display", activity="Display cleared")
+            if not self._check_refresh_health(time.monotonic() - refresh_start, operation="Display clear"):
+                return {"success": False, "error": "Display did not report a refresh cycle (BUSY stayed idle)"}
             return {"success": True, "message": "Display cleared"}
         except Exception as e:
-            logging.error(f"Error clearing display: {e}")
-            update_diagnostics("display", "Display clear failed", "Display clear failed")
+            self._record_display_error(e, "Display clear")
             return {"success": False, "error": str(e)}
 
     def display_dashboard_qr(self, access_info):

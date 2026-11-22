@@ -29,6 +29,7 @@
 #
 
 import logging
+import time
 from . import epdconfig
 
 import PIL
@@ -55,6 +56,7 @@ class EPD:
         self.RED    = 0x0000ff   #   0011
         self.BLUE   = 0xff0000   #   0101
         self.GREEN  = 0x00ff00   #   0110
+        self.last_refresh_busy_s = None
         
 
     # Hardware reset
@@ -85,12 +87,19 @@ class EPD:
         epdconfig.spi_writebyte2(data)
         epdconfig.digital_write(self.cs_pin, 1)
         
-    def ReadBusyH(self):
-        logger.debug("e-Paper busy H")
+    def ReadBusyH(self, timeout_s=45.0, stage="busy"):
+        logger.debug("e-Paper busy H (%s)", stage)
+        start = time.monotonic()
         while(epdconfig.digital_read(self.busy_pin) == 0):      # 0: busy, 1: idle
+            if time.monotonic() - start > timeout_s:
+                raise TimeoutError(
+                    f"e-Paper BUSY pin stayed low for >{timeout_s:.0f}s during {stage}"
+                )
             epdconfig.delay_ms(5)
+        busy_elapsed = time.monotonic() - start
         epdconfig.delay_ms(200)
-        logger.debug("e-Paper busy H release")
+        logger.debug("e-Paper busy H release (%s, %.2fs)", stage, busy_elapsed)
+        return busy_elapsed
 
     def TurnOnDisplay(self, fast_refresh=False):
         # Experimental Spectra 6 timing; select each cycle so disabling restores stock.
@@ -98,7 +107,7 @@ class EPD:
         self.send_data(0x07 if fast_refresh else 0x08)
 
         self.send_command(0x04) # POWER_ON
-        self.ReadBusyH()
+        self.ReadBusyH(timeout_s=15.0, stage="POWER_ON")
 
         self.send_command(0x06)
         self.send_data(0x6F)
@@ -109,18 +118,18 @@ class EPD:
 
         self.send_command(0x12) # DISPLAY_REFRESH
         self.send_data(0X00)
-        self.ReadBusyH()
+        self.last_refresh_busy_s = self.ReadBusyH(timeout_s=45.0, stage="DISPLAY_REFRESH")
         
         self.send_command(0x02) # POWER_OFF
         self.send_data(0X00)
-        self.ReadBusyH()
+        self.ReadBusyH(timeout_s=15.0, stage="POWER_OFF")
         
     def init(self):
         if (epdconfig.module_init() != 0):
             return -1
         # EPD hardware init start
         self.reset()
-        self.ReadBusyH()
+        self.ReadBusyH(timeout_s=15.0, stage="init_reset")
         epdconfig.delay_ms(30)
 
         self.send_command(0xAA)   
@@ -183,7 +192,7 @@ class EPD:
 
         self.send_command(0x84)
         self.send_data(0x01)
-        self.ReadBusyH()
+        self.ReadBusyH(timeout_s=15.0, stage="init_ready")
         return 0
 
     def getbuffer(self, image):
