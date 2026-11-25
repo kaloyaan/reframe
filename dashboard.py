@@ -5,6 +5,7 @@ import json
 import sys
 import logging
 import asyncio
+import subprocess
 import time
 import shutil
 import math
@@ -510,7 +511,10 @@ async def get_update_status(fetch: bool = True) -> Dict[str, Any]:
             behind = int(parts[1])
 
     dirty_result = await run_git(["-c", "core.fileMode=false", "status", "--porcelain", "--untracked-files=no"])
-    has_tracked_changes = bool(dirty_result["stdout"]) if dirty_result["returncode"] == 0 else True
+    modified_files = [
+        line[3:].strip() for line in dirty_result["stdout"].splitlines() if line.strip()
+    ] if dirty_result["returncode"] == 0 else []
+    has_tracked_changes = bool(modified_files) if dirty_result["returncode"] == 0 else True
 
     update_available = local_revision != remote_revision and merge_base == local_revision
     up_to_date = local_revision == remote_revision
@@ -530,7 +534,8 @@ async def get_update_status(fetch: bool = True) -> Dict[str, Any]:
         message = "Could not determine update state."
 
     if update_available and has_tracked_changes:
-        message = f"{message} Local code changes must be committed or discarded before updating."
+        files_note = f" ({', '.join(modified_files[:5])}{'...' if len(modified_files) > 5 else ''})" if modified_files else ""
+        message = f"{message} Local code changes must be committed or discarded before updating{files_note}."
 
     return {
         "branch": branch,
@@ -545,6 +550,7 @@ async def get_update_status(fetch: bool = True) -> Dict[str, Any]:
         "up_to_date": up_to_date,
         "diverged": diverged,
         "has_tracked_changes": has_tracked_changes,
+        "modified_files": modified_files,
         "post_install_pending": post_install_pending,
         "can_update": can_update,
         "message": message
@@ -2582,7 +2588,7 @@ async def dashboard():
                 const checkBtn = document.getElementById('update-check-btn');
                 const installBtn = document.getElementById('update-install-btn');
 
-                if (!confirm('Install the available update? The camera should be rebooted after the update finishes.')) {
+                if (!confirm('Install the available update? The camera will reboot automatically when finished.')) {
                     return;
                 }
 
@@ -3416,9 +3422,11 @@ async def install_update():
         )
 
     if status["has_tracked_changes"]:
+        files = status.get("modified_files") or []
+        files_note = f" ({', '.join(files[:5])}{'...' if len(files) > 5 else ''})" if files else ""
         raise HTTPException(
             status_code=409,
-            detail="Local code changes must be committed or discarded before updating"
+            detail=f"Local code changes must be committed or discarded before updating{files_note}"
         )
 
     if not status["update_available"] and not status["post_install_pending"]:
@@ -3469,13 +3477,30 @@ async def install_update():
         pass
 
     new_status = await get_update_status(fetch=False)
-    message = "Update installed. Reboot the camera to finish."
+    rebooting = False
+    try:
+        subprocess.Popen(
+            ["sudo", "-n", UPDATE_HELPER_PATH, "--reboot"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        rebooting = True
+    except Exception as e:
+        logger.warning("Could not schedule automatic reboot after update: %s", e)
+
+    message = (
+        "Update installed! Rebooting camera now — refresh this page in ~30 seconds."
+        if rebooting
+        else "Update installed. Reboot the camera to finish."
+    )
     if backup_dir:
         message = f"{message} Settings backup: {backup_dir}"
 
     return {
         **new_status,
         "status": "success",
+        "rebooting": rebooting,
         "message": message,
         "backup_dir": backup_dir,
         "preserved_paths": preserved_paths,

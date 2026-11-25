@@ -10,6 +10,12 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+if [ "${1:-}" = "--reboot" ]; then
+    sleep 2
+    systemctl reboot
+    exit 0
+fi
+
 required_files=(
     requirements.txt
     scripts/enable_hdr.sh
