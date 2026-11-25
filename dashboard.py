@@ -509,7 +509,7 @@ async def get_update_status(fetch: bool = True) -> Dict[str, Any]:
             ahead = int(parts[0])
             behind = int(parts[1])
 
-    dirty_result = await run_git(["status", "--porcelain", "--untracked-files=no"])
+    dirty_result = await run_git(["-c", "core.fileMode=false", "status", "--porcelain", "--untracked-files=no"])
     has_tracked_changes = bool(dirty_result["stdout"]) if dirty_result["returncode"] == 0 else True
 
     update_available = local_revision != remote_revision and merge_base == local_revision
